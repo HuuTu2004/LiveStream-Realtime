@@ -1,21 +1,64 @@
+# Python
 __pycache__/
-build/
-*.egg-info/
+*.py[cod]
+*$py.class
 *.so
-*.mp4
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
+# Virtual Environments
+venv/
+venv_talking/
+ENV/
+env/
+.env
+.venv/
+
+# Project Specific
+models/
+pretrained/
+data/
+streamout/
+*.log
+livetalking.log
 tmp*
 trial*/
-
-data
-data_utils/face_tracking/3DMM/*
-data_utils/face_parsing/79999_iter.pth
-
-pretrained
-*.mp4
-.DS_Store
 workspace/log_ngp.txt
-.idea
-models/
-*.log
-dist
+
+# Media / Temp Outputs
+*.mp4
+*.wav
+*.avi
+*.flv
+*.mkv
+*.webm
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Weights/Models (if outside models folder)
+*.pth
+*.onnx
+*.bin
+*.weights
+*.ckpt
