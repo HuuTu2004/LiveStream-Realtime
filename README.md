@@ -1,4 +1,8 @@
-# 🎙️ LiveTalking-Streaming: Real-time Digital Human for Livestreaming
+# 🎙️ LiveStream-Realtime: AI Digital Human for Livestreaming
+
+> [!NOTE]
+> **Acknowledgment:** This project is based on the amazing work by [lipku/LiveTalking](https://github.com/lipku/LiveTalking). Special thanks to the original author for their contribution to the open-source community.
+
 
 <p align="center">
   <img src="./assets/LiveTalking-logo.jpg" align="middle" width="300"/>
@@ -16,7 +20,7 @@
 
 ## 🌟 Overview
 
-**LiveTalking-Streaming** is a high-performance, real-time digital human interaction system specifically optimized for **Livestreaming (TikTok, Shopee, OBS)**. It enables seamless voice-to-video synchronization with ultra-low latency, making it perfect for virtual streamers and AI-powered sales assistants.
+**LiveStream-Realtime** is a high-performance, real-time digital human interaction system specifically optimized for **Livestreaming (TikTok, Shopee, OBS)**. It enables seamless voice-to-video synchronization with ultra-low latency, making it perfect for virtual streamers and AI-powered sales assistants.
 
 ### 🚀 Key Features for Livestreamers
 *   **Real-time Interaction:** Ultra-low latency via **WebRTC** and **RTMP**.
@@ -78,4 +82,4 @@ graph TD
 This project is licensed under the Apache 2.0 License.
 
 ---
-**Developed by HuuTu2004** | Optimized for Real-time Vietnamese Streaming.
+**Maintained for Vietnamese Streaming Optimization.**
