@@ -98,9 +98,26 @@ function rtcNegotiate() {
     });
 }
 
-$("#btn-conn").addEventListener("click", () => {
+async function fetchIceConfig() {
+  try {
+    const r = await fetch("/ice-config", { cache: "no-store" });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return Array.isArray(j.iceServers) ? j.iceServers : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+$("#btn-conn").addEventListener("click", async () => {
   const config = { sdpSemantics: "unified-plan" };
-  if ($("#use-stun").checked) {
+  // Luôn fetch ICE config từ server — server đã có STUN/TURN cấu hình sẵn
+  // (Vast.ai/EC2 deployment cần TURN, local dev có thể không cần STUN).
+  // Checkbox "use-stun" giờ là fallback dùng Google STUN nếu server trả rỗng.
+  const iceServers = await fetchIceConfig();
+  if (iceServers.length > 0) {
+    config.iceServers = iceServers;
+  } else if ($("#use-stun").checked) {
     config.iceServers = [{ urls: ["stun:stun.l.google.com:19302"] }];
   }
   _pc = new RTCPeerConnection(config);

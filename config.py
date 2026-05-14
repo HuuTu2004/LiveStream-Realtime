@@ -102,6 +102,9 @@ def parse_args():
     parser.add_argument('--max_session', type=int, default=1)
     parser.add_argument('--listenport', type=int, default=8010,
                         help="web listen port")
+    # WebRTC NAT/ICE tự dò qua env vars khi cần: PUBLIC_IPADDR (Vast.ai inject
+    # sẵn) hoặc RTC_PUBLIC_IP; TURN_URL/TURN_USER/TURN_PASS nếu cần TURN.
+    # Local dev: không cần set gì cả. Xem server/rtc_manager.py.
 
     # ─── LLM ───────────────────────────────────────────────────────────
     parser.add_argument('--llm_url', type=str, default='http://localhost:11434/v1',

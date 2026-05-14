@@ -101,6 +101,14 @@ def build_avatar_session(sessionid:str, params:dict)->BaseAvatar:
 async def offer(request):
     return await rtc_manager.handle_offer(request)
 
+async def ice_config(request):
+    """Trả iceServers cho frontend (STUN/TURN từ server config).
+
+    Frontend fetch endpoint này trước khi `new RTCPeerConnection` để dùng đúng
+    STUN/TURN deployment đã cấu hình. Tránh hard-code STUN trong HTML/JS.
+    """
+    return web.json_response(rtc_manager.ice_config_for_client())
+
 async def on_shutdown(app):
     await rtc_manager.shutdown()
 
@@ -157,6 +165,7 @@ def main():
 
     appasync.on_shutdown.append(on_shutdown)
     appasync.router.add_post("/offer", offer)
+    appasync.router.add_get("/ice-config", ice_config)
 
     # 注册 server/routes.py 中的通用 API 路由
     setup_routes(appasync)
