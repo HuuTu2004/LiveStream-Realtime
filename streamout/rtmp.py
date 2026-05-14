@@ -92,11 +92,23 @@ class RTMPOutput(BaseOutput):
         except Exception as e:
             logger.debug(f"[RTMP] F_SETPIPE_SZ failed: {e}")
 
-        # Detect NVENC availability (NVIDIA GPU encoder — chip riêng, không
-        # đụng CUDA cores). Default ON nếu có nvidia-smi; fallback libx264 CPU.
-        import shutil as _shutil
-        use_nvenc = _shutil.which('nvidia-smi') is not None and \
-                    os.environ.get('RTMP_ENCODER', 'auto').lower() != 'cpu'
+        # Detect NVENC availability — probe ffmpeg thật (Vast container có
+        # nvidia-smi nhưng KHÔNG có libnvidia-encode, nvenc fail runtime).
+        encoder_env = os.environ.get('RTMP_ENCODER', 'auto').lower()
+        use_nvenc = False
+        if encoder_env in ('auto', 'nvenc'):
+            try:
+                test = subprocess.run(
+                    ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                     '-f', 'lavfi', '-i', 'nullsrc=s=64x64', '-frames:v', '1',
+                     '-c:v', 'h264_nvenc', '-f', 'null', '-'],
+                    capture_output=True, timeout=5,
+                )
+                use_nvenc = (test.returncode == 0)
+                if not use_nvenc:
+                    logger.info(f"[RTMP] nvenc probe fail: {test.stderr.decode()[:200]}")
+            except Exception as e:
+                logger.info(f"[RTMP] nvenc probe error: {e}")
         if use_nvenc:
             video_codec = [
                 '-c:v', 'h264_nvenc',
