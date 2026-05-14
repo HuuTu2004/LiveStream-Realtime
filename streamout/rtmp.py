@@ -78,21 +78,23 @@ class RTMPOutput(BaseOutput):
 
         cmd = [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'info',
-            # Low-latency flags cho live streaming
+            # Low-latency flags + skip metadata probe để start nhanh
             '-fflags', '+nobuffer+flush_packets',
             '-flags', 'low_delay',
+            '-probesize', '32',
+            '-analyzeduration', '0',
             # Video input (rgb24 raw, được Python feed qua v_r)
             '-f', 'rawvideo',
             '-pix_fmt', 'rgb24',
             '-s', f'{w}x{h}',
             '-r', str(self.fps),
-            '-thread_queue_size', '512',
+            '-thread_queue_size', '1024',
             '-i', f'pipe:{v_r}',
             # Audio input (float32 little-endian mono, từ a_r)
             '-f', 'f32le',
             '-ar', str(self.sample_rate),
             '-ac', '1',
-            '-thread_queue_size', '512',
+            '-thread_queue_size', '1024',
             '-i', f'pipe:{a_r}',
             # Video encode: x264 zerolatency cho real-time
             '-c:v', 'libx264',
