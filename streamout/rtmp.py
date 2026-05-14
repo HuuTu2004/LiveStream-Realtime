@@ -178,8 +178,10 @@ class RTMPOutput(BaseOutput):
         self._stderr_thread = threading.Thread(target=self._pipe_stderr, daemon=True)
         self._stderr_thread.start()
 
-        # Pre-fill 0.5s silence để ffmpeg probe input #1 nhanh
-        prefill = np.zeros(self.sample_rate // 2, dtype=np.float32)
+        # Pre-fill 5s silence để ffmpeg probe input #1 + giữ audio không stall
+        # trong khi avatar pipeline warmup (wav2lip + TTS first inference có thể chậm).
+        # Per push_video_frame sau đó write 1 chunk audio để bù lại consumed silence.
+        prefill = np.zeros(self.sample_rate * 5, dtype=np.float32)
         try:
             os.write(self._audio_fd_w, prefill.tobytes())
         except OSError as e:
