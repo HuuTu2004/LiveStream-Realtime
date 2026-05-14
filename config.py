@@ -15,6 +15,16 @@ def str_or_int(value):
         return value
 
 
+def _str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if str(v).lower() in ("yes", "true", "t", "1"):
+        return True
+    if str(v).lower() in ("no", "false", "f", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="LiveTalking Digital Human Server")
@@ -24,10 +34,6 @@ def parse_args():
     parser.add_argument('-l', type=int, default=10)
     parser.add_argument('-m', type=int, default=8)
     parser.add_argument('-r', type=int, default=10)
-
-    # ─── 画面 ──────────────────────────────────────────────────────────
-    # parser.add_argument('--W', type=int, default=450, help="GUI width")
-    # parser.add_argument('--H', type=int, default=450, help="GUI height")
 
     # ─── 数字人模型 ────────────────────────────────────────────────────
     parser.add_argument('--model', type=str, default='wav2lip',
@@ -42,14 +48,26 @@ def parse_args():
     parser.add_argument('--customvideo_config', type=str, default='',
                         help="custom action json")
 
-    # ─── TTS ───────────────────────────────────────────────────────────
-    parser.add_argument('--tts', type=str, default='edgetts',
-                        help="tts plugin: edgetts/gpt-sovits/cosyvoice/fishtts/tencent/doubao/indextts2/azuretts/qwentts/vienuetts")
+    # ─── TTS (chỉ F5-TTS Vietnamese — voice cloning SOTA cho livestream) ──
+    parser.add_argument('--tts', type=str, default='f5tts',
+                        help="tts plugin: f5tts (Vietnamese voice cloning)")
 
-    parser.add_argument('--REF_FILE', type=str, default="zh-CN-YunxiaNeural",
-                        help="参考文件名或语音模型ID")
-    parser.add_argument('--REF_TEXT', type=str, default=None)
-    parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880')
+    # Legacy refs (giữ để compat với code đọc opt.REF_FILE)
+    parser.add_argument('--REF_FILE', type=str, default='',
+                        help="(legacy) reference audio — F5-TTS dùng --f5_ref_audio")
+    parser.add_argument('--REF_TEXT', type=str, default='',
+                        help="(legacy) reference transcript — F5-TTS dùng --f5_ref_text")
+
+    # ─── F5-TTS Vietnamese ─────────────────────────────────────────────
+    parser.add_argument('--f5_ref_audio', type=str, default='',
+                        help="F5-TTS reference WAV (5-15s) cho voice cloning")
+    parser.add_argument('--f5_ref_text', type=str, default='',
+                        help="Transcript của f5_ref_audio")
+    parser.add_argument('--f5_model_path', type=str,
+                        default='hf://hynt/F5-TTS-Vietnamese-ViVoice',
+                        help="HF repo hoặc local path tới F5-TTS Vietnamese checkpoint")
+    parser.add_argument('--f5_vocoder', type=str, default='vocos',
+                        help="F5-TTS vocoder: vocos hoặc bigvgan")
 
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='webrtc',
@@ -65,7 +83,24 @@ def parse_args():
                         help="LLM API server URL (Ollama/vLLM/Vast.ai)")
     parser.add_argument('--llm_model', type=str, default='qwen2.5:7b',
                         help="LLM model name")
+    parser.add_argument('--llm_api_key', type=str, default='none',
+                        help="LLM API key (cho OpenAI/Anthropic; để 'none' cho local)")
 
+    # ─── Sales Brain ───────────────────────────────────────────────────
+    parser.add_argument('--brain_enabled', type=_str2bool, default=False,
+                        help="Bật sales brain (auto-start khi tạo session)")
+    parser.add_argument('--products_path', type=str, default='data/products.json',
+                        help="Đường dẫn JSON catalog sản phẩm")
+    parser.add_argument('--persona', type=str, default='linh_vi',
+                        help="Persona prompt: linh_vi (tiếng Việt mặc định)")
+    parser.add_argument('--silence_gap_secs', type=int, default=30,
+                        help="Khoảng lặng trước khi brain tự nói (giây)")
+
+    # ─── Studio Portal ─────────────────────────────────────────────────
+    parser.add_argument('--studio_enabled', type=_str2bool, default=True,
+                        help="Bật cổng training studio /studio/*")
+    parser.add_argument('--studio_workdir', type=str, default='data/uploads',
+                        help="Thư mục lưu upload + workdir cho training jobs")
 
     opt = parser.parse_args()
 
@@ -74,5 +109,40 @@ def parse_args():
     if opt.customvideo_config:
         with open(opt.customvideo_config, 'r') as f:
             opt.customopt = json.load(f)
+
+    # ─── Override từ data/settings.json (dynamic config từ web) ──────
+    # File này được tạo/sửa qua route POST /config. Ưu tiên thấp hơn CLI
+    # explicit nhưng cao hơn default — vì argparse không biết user truyền hay default,
+    # ta chỉ apply settings.json cho các key user CHƯA truyền explicit.
+    settings_path = os.environ.get('LIVETALKING_SETTINGS_PATH', 'data/settings.json')
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+            if isinstance(settings, dict):
+                # Detect explicit CLI args (parsed != default)
+                import sys
+                explicit_args = set()
+                for arg in sys.argv[1:]:
+                    if arg.startswith('--'):
+                        explicit_args.add(arg.lstrip('-').replace('-', '_'))
+                for k, v in settings.items():
+                    if hasattr(opt, k) and k not in explicit_args:
+                        # Cast theo type của default
+                        cur = getattr(opt, k)
+                        try:
+                            if isinstance(cur, bool):
+                                v = v if isinstance(v, bool) else str(v).lower() in ('1','true','yes','on')
+                            elif isinstance(cur, int) and not isinstance(cur, bool):
+                                v = int(v) if v not in (None, '') else cur
+                            elif isinstance(cur, float):
+                                v = float(v) if v not in (None, '') else cur
+                            else:
+                                v = v if v is not None else cur
+                        except (TypeError, ValueError):
+                            continue
+                        setattr(opt, k, v)
+        except Exception as e:
+            print(f'[config] settings.json load failed: {e}')
 
     return opt

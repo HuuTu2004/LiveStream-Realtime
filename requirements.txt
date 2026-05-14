@@ -1,50 +1,61 @@
-torch-ema
-ninja
-trimesh
-opencv-python
-tensorboardX
-numpy 
+# ════════════════════════════════════════════════════════════════════════
+#  LiveTalking Sales — Tất cả dependency trong 1 file duy nhất
+#  Cài đặt: pip install -r requirements.txt
+#  Yêu cầu: Python 3.10+, CUDA 12.1 (PyTorch GPU), ffmpeg system
+# ════════════════════════════════════════════════════════════════════════
+
+# ─── HTTP server + async ──────────────────────────────────────────────
+aiohttp>=3.9.0
+aiohttp_cors
+aiortc                      # WebRTC peer-to-peer
+
+# ─── LLM brain (async OpenAI / Ollama / vLLM / Vast.AI) ───────────────
+openai>=1.40.0
+httpx>=0.27.0
+
+# ─── TikTok Live scraper (comment/like/join/gift) ────────────────────
+TikTokLive>=6.0.0
+
+# ─── F5-TTS Vietnamese (voice cloning, SOTA 2024) ────────────────────
+f5-tts>=0.6.0
+vocos>=0.1.0
+
+# ─── Avatar models (MuseTalk diffusion + Wav2Lip + Ultralight) ───────
+transformers==4.46.2
+diffusers
+accelerate
+omegaconf
+einops
+lpips==0.1.3
+
+# ─── Audio processing ─────────────────────────────────────────────────
+soundfile==0.12.1
+librosa
+resampy
+numba
+python_speech_features
+ffmpeg-python
+imageio-ffmpeg
+
+# ─── Computer vision + face detection (Studio preprocess) ────────────
+opencv-python-headless
+mediapipe>=0.10.0
+face_alignment
+
+# ─── Numerical / ML core ─────────────────────────────────────────────
+numpy>=1.24,<2.0
+scipy
+scikit-learn
 pandas
 tqdm
 matplotlib
-PyMCubes
-rich
-dearpygui
-packaging
-scipy
-scikit-learn
 
-face_alignment
-python_speech_features
-numba
-resampy
-#pyaudio
-soundfile==0.12.1
-einops
+# ─── Misc utilities ───────────────────────────────────────────────────
 configargparse
-
-lpips==0.1.3
-imageio-ffmpeg
-
-transformers==4.46.2
-edge_tts
-flask
-flask_sockets
-opencv-python-headless
-aiortc
-aiohttp_cors
-
-ffmpeg-python
-omegaconf
-diffusers
-accelerate
-
-librosa
-openai
-websocket-client
-websockets==12.0
-#gradio_client
-#azure-cognitiveservices-speech
-
 typeguard==2.13.3
+ninja
+packaging
+rich
+websockets==12.0
+websocket-client
 onnxruntime-gpu

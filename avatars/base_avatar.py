@@ -81,30 +81,36 @@ class BaseAvatar:
         # self.custom_opt = {}
         self.__loadcustom()
 
+        # ─── Named gesture system (port LiveAI sales avatar) ──────────
+        # gesture_cycles: dict[str, list[NDArray]] — frame packs theo tên
+        # gesture_manifest: dict[str, dict] — config từ gestures.json
+        # active_gesture: tên gesture đang phát (None = bình thường)
+        # gesture_blend_*: crossfade counters (frame-based)
+        self.gesture_cycles: dict = {}
+        self.gesture_manifest: dict = {}
+        self.active_gesture: 'str|None' = None
+        self.gesture_index: int = 0
+        self.gesture_frames_left: int = 0
+        self.gesture_blend_in: int = 0
+        self.gesture_blend_out: int = 0
+        self._last_rendered_frame = None
+        self._gesture_lock = None  # set dưới (Threading Lock) trong __post_load
+
         self.batch_size = opt.batch_size
         self.res_frame_queue = Queue(self.batch_size*2)
         self.render_event = Event()
 
+        # Chỉ dùng F5-TTS Vietnamese (voice cloning SOTA cho livestream bán hàng)
         _tts_modules = {
-            'edgetts': 'tts.edge',
-            'gpt-sovits': 'tts.sovits',
-            'xtts': 'tts.xtts',
-            'cosyvoice': 'tts.cosyvoice',
-            'fishtts': 'tts.fish',
-            'tencent': 'tts.tencent',
-            'doubao': 'tts.doubao',
-            'indextts2': 'tts.indextts2',
-            'azuretts': 'tts.azure',
-            'qwentts': 'tts.qwentts',
-            'vienuetts': 'tts.vienue'
+            'f5tts': 'tts.f5tts',
         }
 
-
-        if opt.tts in _tts_modules:
-            importlib.import_module(_tts_modules[opt.tts])
-            self.tts = registry.create("tts", opt.tts, opt=opt, parent=self)
-        else:
-            logger.error(f"TTS module {opt.tts} not found.")
+        tts_name = getattr(opt, 'tts', 'f5tts')
+        if tts_name not in _tts_modules:
+            logger.warning(f"TTS '{tts_name}' không được hỗ trợ; fallback sang f5tts.")
+            tts_name = 'f5tts'
+        importlib.import_module(_tts_modules[tts_name])
+        self.tts = registry.create("tts", tts_name, opt=opt, parent=self)
 
         _output_modules = {
             'webrtc': 'streamout.webrtc',
@@ -196,18 +202,138 @@ class BaseAvatar:
         return self.speaking
     
     def __loadcustom(self):
-        if not hasattr(self.opt, 'customopt') or not self.opt.customopt:
+        # 1) Legacy customopt JSON cycles (giữ backward compat hoàn toàn)
+        if hasattr(self.opt, 'customopt') and self.opt.customopt:
+            for item in self.opt.customopt:
+                logger.info(item)
+                input_img_list = glob.glob(os.path.join(item['imgpath'], '*.[jpJP][pnPN]*[gG]'))
+                input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+                self.custom_img_cycle[item['audiotype']] = read_imgs(input_img_list)
+                if item.get('audiopath'):
+                    self.custom_audio_cycle[item['audiotype']], sample_rate = sf.read(item['audiopath'], dtype='float32')
+                    self.custom_audio_index[item['audiotype']] = 0
+                self.custom_index[item['audiotype']] = 0
+
+        # 2) New named gesture pack: data/avatars/{id}/gestures.json + gestures/{name}/*.png
+        self.__load_gestures()
+        # Lock cho gesture state (read/write từ multiple threads: process_frames + ws notify)
+        import threading as _t
+        self._gesture_lock = _t.Lock()
+
+    def __load_gestures(self):
+        """Load gesture pack từ data/avatars/{avatar_id}/gestures.json (nếu có)."""
+        avatar_id = getattr(self.opt, 'avatar_id', None)
+        if not avatar_id:
             return
-        for item in self.opt.customopt:
-            logger.info(item)
-            input_img_list = glob.glob(os.path.join(item['imgpath'], '*.[jpJP][pnPN]*[gG]'))
-            input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-            self.custom_img_cycle[item['audiotype']] = read_imgs(input_img_list)
-            if item.get('audiopath'):
-                self.custom_audio_cycle[item['audiotype']], sample_rate = sf.read(item['audiopath'], dtype='float32')
-                self.custom_audio_index[item['audiotype']] = 0
-            self.custom_index[item['audiotype']] = 0
-            # self.custom_opt[item['audiotype']] = item
+        avatar_dir = os.path.join('data', 'avatars', avatar_id)
+        manifest_path = os.path.join(avatar_dir, 'gestures.json')
+        if not os.path.exists(manifest_path):
+            return
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+        except Exception:
+            logger.exception('[Gesture] load manifest failed: %s', manifest_path)
+            return
+
+        for name, cfg in manifest.items():
+            gdir = os.path.join(avatar_dir, 'gestures', name)
+            if not os.path.isdir(gdir):
+                logger.warning('[Gesture] dir not found: %s', gdir)
+                continue
+            imgs = glob.glob(os.path.join(gdir, '*.[jpJP][pnPN]*[gG]'))
+            imgs = sorted(imgs, key=lambda x: os.path.basename(x))
+            if not imgs:
+                continue
+            frames = read_imgs(imgs)
+            self.gesture_cycles[name] = frames
+            self.gesture_manifest[name] = dict(cfg or {})
+            self.gesture_manifest[name].setdefault('frames', len(frames))
+            self.gesture_manifest[name].setdefault('loop', False)
+            self.gesture_manifest[name].setdefault('blend', 5)
+            logger.info('[Gesture] Loaded %s (%d frames)', name, len(frames))
+
+    def set_gesture(self, name: str, duration_frames: 'int|None' = None) -> bool:
+        """Trigger named gesture. Thread-safe.
+
+        - duration_frames: nếu None, dùng manifest['frames'] (số frame trong clip).
+        - Khi đang có gesture: override (cancel cái cũ, blend ra rồi vào cái mới).
+        - Return False nếu không có gesture name đó.
+        """
+        if not name or name not in self.gesture_cycles:
+            return False
+        cfg = self.gesture_manifest.get(name, {})
+        blend = int(cfg.get('blend', 5))
+        n_frames = int(duration_frames if duration_frames is not None else cfg.get('frames', len(self.gesture_cycles[name])))
+        if self._gesture_lock is not None:
+            with self._gesture_lock:
+                self.active_gesture = name
+                self.gesture_index = 0
+                self.gesture_frames_left = max(1, n_frames)
+                self.gesture_blend_in = max(0, blend)
+                self.gesture_blend_out = 0
+        else:
+            self.active_gesture = name
+            self.gesture_index = 0
+            self.gesture_frames_left = max(1, n_frames)
+            self.gesture_blend_in = max(0, blend)
+            self.gesture_blend_out = 0
+        return True
+
+    def _step_gesture_frame(self, base_frame):
+        """Lấy frame gesture kế tiếp + blend với base_frame.
+
+        Return: (blended_frame, gesture_was_active_for_this_step)
+        """
+        if self._gesture_lock is None:
+            return base_frame, False
+        with self._gesture_lock:
+            name = self.active_gesture
+            if not name or name not in self.gesture_cycles:
+                return base_frame, False
+
+            cycle = self.gesture_cycles[name]
+            cfg = self.gesture_manifest.get(name, {})
+            loop = bool(cfg.get('loop', False))
+            blend = max(1, int(cfg.get('blend', 5)))
+
+            # Resolve frame index
+            if loop:
+                g_idx = self.gesture_index % len(cycle)
+            else:
+                g_idx = min(self.gesture_index, len(cycle) - 1)
+            g_frame = cycle[g_idx]
+
+            # Resize/match shape với base_frame nếu cần
+            if base_frame is not None and g_frame.shape != base_frame.shape:
+                g_frame = cv2.resize(g_frame, (base_frame.shape[1], base_frame.shape[0]))
+
+            out = g_frame
+            # Blend-in
+            if self.gesture_blend_in > 0 and base_frame is not None:
+                alpha = 1.0 - (self.gesture_blend_in / float(blend))
+                alpha = max(0.0, min(1.0, alpha))
+                out = cv2.addWeighted(base_frame, 1 - alpha, g_frame, alpha, 0)
+                self.gesture_blend_in -= 1
+            # Blend-out
+            elif self.gesture_blend_out > 0 and base_frame is not None:
+                alpha = self.gesture_blend_out / float(blend)
+                alpha = max(0.0, min(1.0, alpha))
+                out = cv2.addWeighted(base_frame, 1 - alpha, g_frame, alpha, 0)
+                self.gesture_blend_out -= 1
+                if self.gesture_blend_out == 0:
+                    self.active_gesture = None
+                    self.gesture_index = 0
+                    self.gesture_frames_left = 0
+                return out, True
+
+            # Advance
+            self.gesture_index += 1
+            self.gesture_frames_left -= 1
+            # Khi gần hết, trigger blend-out
+            if self.gesture_frames_left <= blend and self.gesture_blend_out == 0:
+                self.gesture_blend_out = self.gesture_frames_left if self.gesture_frames_left > 0 else 1
+            return out, True
 
     def init_customindex(self):
         self.custom_audiotype = 0
@@ -217,8 +343,18 @@ class BaseAvatar:
             self.custom_index[key] = 0
 
     def notify(self, eventpoint:dict):
-        if eventpoint and eventpoint.get('status'):
+        if not eventpoint:
+            return
+        if eventpoint.get('status'):
             logger.info("notify:%s", eventpoint)
+        # Gesture dispatch (from F5-TTS / TTS eventpoint piggyback)
+        gname = eventpoint.get('gesture') if isinstance(eventpoint, dict) else None
+        if gname and self.gesture_cycles:
+            ok = self.set_gesture(gname)
+            if ok:
+                logger.info("[Gesture] activated: %s", gname)
+            else:
+                logger.debug("[Gesture] unknown name: %s (have: %s)", gname, list(self.gesture_cycles.keys()))
 
     def start_recording(self):
         if self.recording:
@@ -358,24 +494,34 @@ class BaseAvatar:
         logger.info('baseavatar inference thread stop')
 
     def process_frames(self,quit_event):
-        enable_transition = False  # 设置为False禁用过渡效果，True启用
-        
+        # Bật transition mặc định cho avatar có gesture pack (giúp speak↔silent mượt)
+        enable_transition = True
+        _transition_duration = 0.12  # ~3 frame @25fps
+        _last_silent_frame = None
+        _last_speaking_frame = None
         _last_speaking = False
         _transition_start = time.time()
-        if enable_transition:
-            _transition_duration = 0.1  # 过渡时间
-            _last_silent_frame = None  # 静音帧缓存
-            _last_speaking_frame = None  # 说话帧缓存
 
         self.output.start()
-        
+
         while not quit_event.is_set():
             try:
                 audio_frames: list[AudioFrameData]
                 res_frame,audio_frames,idx = self.res_frame_queue.get(block=True, timeout=1)
             except queue.Empty:
                 continue
-            
+
+            # ─── Gesture dispatch từ eventpoint piggyback ──────────────
+            # F5-TTS plugin gắn eventpoint['gesture']='wave' ở chunk đầu mỗi câu.
+            # Audio chunk → AudioFrameData.userdata mang eventpoint xuyên suốt pipeline.
+            for af in audio_frames:
+                ud = af.userdata or {}
+                if isinstance(ud, dict) and ud.get('gesture'):
+                    try:
+                        self.notify(ud)
+                    except Exception:
+                        logger.exception('notify(gesture) error')
+
             # 检测状态变化
             current_speaking = not (audio_frames[0].type!=0 and audio_frames[1].type!=0)
             if current_speaking != _last_speaking:
@@ -386,21 +532,19 @@ class BaseAvatar:
             if audio_frames[0].type!=0 and audio_frames[1].type!=0: #全为静音数据，只需要取fullimg
                 self.speaking = False
                 audiotype = audio_frames[0].type
-                if self.custom_index.get(audiotype) is not None: #有自定义视频
+                if self.custom_index.get(audiotype) is not None: #有自定义视频 (legacy customopt)
                     mirindex = mirror_index(len(self.custom_img_cycle[audiotype]),self.custom_index[audiotype])
                     target_frame = self.custom_img_cycle[audiotype][mirindex]
                     self.custom_index[audiotype] += 1
                 else:
                     target_frame = self.frame_list_cycle[idx]
-                
+
                 if enable_transition:
-                    # 说话→静音过渡
                     if time.time() - _transition_start < _transition_duration and _last_speaking_frame is not None:
                         alpha = min(1.0, (time.time() - _transition_start) / _transition_duration)
                         combine_frame = cv2.addWeighted(_last_speaking_frame, 1-alpha, target_frame, alpha, 0)
                     else:
                         combine_frame = target_frame
-                    # 缓存静音帧
                     _last_silent_frame = combine_frame.copy()
                 else:
                     combine_frame = target_frame
@@ -412,28 +556,33 @@ class BaseAvatar:
                     logger.warning(f"paste_back_frame error: {e}")
                     continue
                 if enable_transition:
-                    # 静音→说话过渡
                     if time.time() - _transition_start < _transition_duration and _last_silent_frame is not None:
                         alpha = min(1.0, (time.time() - _transition_start) / _transition_duration)
                         combine_frame = cv2.addWeighted(_last_silent_frame, 1-alpha, current_frame, alpha, 0)
                     else:
                         combine_frame = current_frame
-                    # 缓存说话帧
                     _last_speaking_frame = combine_frame.copy()
                 else:
                     combine_frame = current_frame
 
+            # ─── Gesture overlay (sau khi base frame đã sẵn sàng) ──────
+            # Khi gesture active: blend gesture frame lên base. Crossfade in/out
+            # 5-frame ở 2 đầu. Mouth có thể không lipsync hoàn hảo trong window
+            # gesture nhưng gesture thường chỉ 1-3s nên chấp nhận được.
+            if self.active_gesture and self.gesture_cycles:
+                try:
+                    combine_frame, _was_active = self._step_gesture_frame(combine_frame)
+                except Exception:
+                    logger.exception('gesture step error')
+
             cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
-            
+
             # 使用统一输出接口推送视频帧
             self.output.push_video_frame(combine_frame)
             self.record_video_data(combine_frame)
 
             for audio_frame in audio_frames:
-                #frame,type,eventpoint = audio_frame
                 frame = (audio_frame.data * 32767).astype(np.int16)
-
-                # 使用统一输出接口推送音频帧
                 self.output.push_audio_frame(frame, audio_frame.userdata)
                 self.record_audio_data(frame)
                 

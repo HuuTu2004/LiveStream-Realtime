@@ -41,7 +41,12 @@ def get_session(request, sessionid: str):
 # ─── 路由处理函数 ──────────────────────────────────────────────────────────
 
 async def human(request):
-    """文本输入（echo/chat 模式），支持 voice/emotion 参数"""
+    """Text input route.
+
+    - type='echo'  → đẩy thẳng text vào TTS queue (KHÔNG LLM).
+    - type='chat'  → forward sang brain (1 LLM call, không state machine);
+                     nếu brain chưa start, on-the-fly tạo LLM client.
+    """
     try:
         params: dict = await request.json()
 
@@ -54,17 +59,40 @@ async def human(request):
             avatar_session.flush_talk()
 
         datainfo = {}
-        if params.get('tts'):  # tts 参数透传（voice, emotion 等）
+        if params.get('tts'):
             datainfo['tts'] = params.get('tts')
 
-        if params['type'] == 'echo':
-            avatar_session.put_msg_txt(params['text'], datainfo)
-        elif params['type'] == 'chat':
-            llm_response = request.app.get("llm_response")
-            if llm_response:
-                asyncio.get_event_loop().run_in_executor(
-                    None, llm_response, params['text'], avatar_session, datainfo
+        text = params.get('text', '')
+
+        if params.get('type') == 'echo':
+            avatar_session.put_msg_txt(text, datainfo)
+        elif params.get('type') == 'chat':
+            # Ưu tiên brain đang chạy (đã có lịch sử + product context)
+            from brain.brain_manager import get_brain
+            brain = get_brain(sessionid)
+            if brain is not None and brain._running:
+                asyncio.create_task(brain.speak(text, priority=True))
+            else:
+                # Fallback: gọi LLM 1 lần qua brain.llm_client (không persist history)
+                from brain.llm_client import LLMClient
+                from brain.gesture_tagger import GestureTagger
+                opt = avatar_session.opt
+                client = LLMClient(
+                    base_url=getattr(opt, 'llm_url', ''),
+                    api_key=getattr(opt, 'llm_api_key', ''),
+                    model=getattr(opt, 'llm_model', 'gpt-4o-mini'),
                 )
+
+                async def _one_shot():
+                    tagger = GestureTagger()
+                    async for sent, info in tagger.feed_stream(client.stream(text, product=None)):
+                        if not sent:
+                            continue
+                        di = dict(datainfo)
+                        if info.get('gesture'):
+                            di['gesture'] = info['gesture']
+                        avatar_session.put_msg_txt(sent, di)
+                asyncio.create_task(_one_shot())
 
         return json_ok()
     except Exception as e:
@@ -122,6 +150,40 @@ async def set_audiotype(request):
         return json_error(str(e))
 
 
+async def set_gesture(request):
+    """Trigger named gesture (wave/point/nod/...). Thread-safe."""
+    try:
+        params = await request.json()
+        sessionid = params.get('sessionid', '')
+        avatar_session = get_session(request, sessionid)
+        if avatar_session is None:
+            return json_error("session not found")
+        name = params.get('name', '').strip()
+        duration = params.get('duration_frames')
+        ok = avatar_session.set_gesture(name, duration_frames=duration)
+        if not ok:
+            available = list(getattr(avatar_session, 'gesture_cycles', {}).keys())
+            return json_error(f"gesture '{name}' not found. available={available}")
+        return json_ok(data={'name': name})
+    except Exception as e:
+        logger.exception('set_gesture exception:')
+        return json_error(str(e))
+
+
+async def list_gestures(request):
+    """Liệt kê gesture có sẵn cho 1 session."""
+    try:
+        sessionid = request.query.get('sessionid', '')
+        avatar_session = get_session(request, sessionid)
+        if avatar_session is None:
+            return json_error("session not found")
+        manifest = getattr(avatar_session, 'gesture_manifest', {})
+        return json_ok(data={'gestures': manifest})
+    except Exception as e:
+        logger.exception('list_gestures exception:')
+        return json_error(str(e))
+
+
 async def record(request):
     """录制控制"""
     try:
@@ -157,7 +219,10 @@ def setup_routes(app):
     app.router.add_post("/human", human)
     app.router.add_post("/humanaudio", humanaudio)
     app.router.add_post("/set_audiotype", set_audiotype)
+    app.router.add_post("/set_gesture", set_gesture)
+    app.router.add_get("/gestures", list_gestures)
     app.router.add_post("/record", record)
     app.router.add_post("/interrupt_talk", interrupt_talk)
     app.router.add_post("/is_speaking", is_speaking)
-    app.router.add_static('/', path='web')
+    # NOTE: static '/' route phải đặt CUỐI cùng — không thì sẽ swallow các path khác
+    # đăng ký sau (vd /studio/* ở studio.routes). Để studio_routes tự add prefix riêng.

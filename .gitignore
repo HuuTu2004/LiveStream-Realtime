@@ -1,121 +1,64 @@
-<<<<<<< Updated upstream
-# Python
+# ─── Python ──────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-=======
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Cấu trúc dự án
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Môi trường ảo (Virtual Environments)
-venv/
-venv_talking/
-.venv/
-env/
-ENV/
-bin/
-lib/
-develop-eggs/
-dist/
-eggs/
->>>>>>> Stashed changes
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
-<<<<<<< Updated upstream
-MANIFEST
 
-# Virtual Environments
+# ─── Virtual environments ────────────────────────────────────────────
 venv/
 venv_talking/
-ENV/
-env/
-.env
 .venv/
+env/
+ENV/
 
-# Project Specific
-models/
-pretrained/
-data/
-streamout/
-*.log
-livetalking.log
-tmp*
-trial*/
-workspace/log_ngp.txt
-
-# Media / Temp Outputs
-*.mp4
-*.wav
-*.avi
-*.flv
-*.mkv
-*.webm
-
-# IDEs
+# ─── IDE / OS ────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
-.DS_Store
-
-# Weights/Models (if outside models folder)
-*.pth
-*.onnx
-*.bin
-*.weights
-*.ckpt
-=======
-
-# Dữ liệu Models (Cực nặng, không nên đưa lên Git)
-models/*
-!models/.gitkeep
-*.pth
-*.pt
-*.pb
-*.pbmm
-*.onnx
-*.gguf
-
-# Dữ liệu Avatars & Records
-data/avatars/*
-!data/avatars/.gitkeep
-data/record.mp4
-temp*.mp4
-temp*.aac
-*.log
-webui.log
-vieneu_server.log
-llm_server.log
-
-# Hệ điều hành
 .DS_Store
 Thumbs.db
 
-# Private config
+# ─── LiveTalking data (gitignore — quá nặng / per-instance) ─────────
+# Model weights (10-15GB)
+models/*
+!models/.gitkeep
+
+# Avatar/voice/gesture user-uploaded
+data/avatars/*
+!data/avatars/.gitkeep
+data/uploads/
+data/products.json
+data/products.json.bak
+data/settings.json
+data/record.mp4
+
+# Job artifacts
+data/jobs/
+
+# ─── Logs / temp ─────────────────────────────────────────────────────
+*.log
+server.log
+temp*.mp4
+temp*.aac
+.setup_done
+
+# ─── Secrets ─────────────────────────────────────────────────────────
+.env
+.env.local
+*.local.env
 config.json
-*.env
->>>>>>> Stashed changes
+
+# ─── Common model file extensions (nếu user lỡ đặt ngoài models/) ───
+*.pth
+*.pt
+*.bin
+*.onnx
+*.gguf
+*.ckpt
+*.safetensors

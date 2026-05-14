@@ -1,110 +1,105 @@
-# 🎙️ LiveStream-Realtime: AI Digital Human for Livestreaming
+# LiveTalking Sales
 
-> [!NOTE]
-> **Acknowledgment:** This project is based on the amazing work by [lipku/LiveTalking](https://github.com/lipku/LiveTalking). Special thanks to the original author for their contribution to the open-source community.
-
+> Digital-human livestream bán hàng tiếng Việt: avatar lip-sync + F5-TTS voice cloning + LLM sales brain + TikTok scraper. Tất cả trong 1 process, 1 trang web quản trị.
 
 <p align="center">
-  <img src="./assets/LiveTalking-logo.jpg" align="middle" width="300"/>
+  <img src="./assets/LiveTalking-logo.jpg" align="middle" width="280"/>
 </p>
 
 <p align="center">
-    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202-dfd.svg"></a>
-    <img src="https://img.shields.io/badge/python-3.10+-aff.svg">
-    <img src="https://img.shields.io/badge/os-linux%2C%20win%2C%20mac-pink.svg">
-    <img src="https://img.shields.io/badge/Livestream-Optimized-orange">
-    <img src="https://img.shields.io/badge/Language-Vietnamese%20Supported-red">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue">
+  <img src="https://img.shields.io/badge/python-3.10+-aff.svg">
+  <img src="https://img.shields.io/badge/cuda-12.1-green">
+  <img src="https://img.shields.io/badge/Vietnamese-Optimized-red">
 </p>
 
----
+> Dựa trên [lipku/LiveTalking](https://github.com/lipku/LiveTalking) — mở rộng cho livestream-sales tiếng Việt.
 
-## 🌟 Overview
+## ✨ Tính năng chính
 
-**LiveStream-Realtime** is a high-performance, real-time digital human interaction system specifically optimized for **Livestreaming (TikTok, Shopee, OBS)**. It enables seamless voice-to-video synchronization with ultra-low latency, making it perfect for virtual streamers and AI-powered sales assistants.
+- 🔴 **Live TikTok 1-click**: nhập `@username` → tự cào comment/like/gift qua [TikTokLive](https://pypi.org/project/TikTokLive/) → đưa vào LLM brain trả lời realtime
+- 🧠 **Sales brain**: persona Linh Sài Gòn, 8-stage SALES_CYCLE, intent classifier 6 cats, silence trigger, viewer milestones
+- 🎙️ **F5-TTS Vietnamese**: voice cloning từ 5-15s reference WAV, chất lượng SOTA 2024
+- 🎥 **Avatar lip-sync**: MuseTalk (chất lượng cao) / Wav2Lip (nhanh) / Ultralight (mobile)
+- 👋 **Gesture system**: LLM tự inject `[wave]`/`[point]`/`[nod]`/`[smile]` đồng bộ với câu nói
+- 📦 **Product CRUD**: schema linh hoạt, bán bất kỳ ngành hàng nào
+- 🛠️ **Studio portal**: upload + train avatar/voice/gesture qua web UI
+- ⚙️ **Dynamic config**: chỉnh 22 tham số qua web, không cần restart cho phần lớn
 
-### 🚀 Key Features for Livestreamers
-*   **Real-time Interaction:** Ultra-low latency via **WebRTC** and **RTMP**.
-*   **Vietnamese Voice Support:** Integrated with **Microsoft Edge TTS** (Hoài Mỹ, Nam Minh) and **GPT-SoVITS** for natural Vietnamese speech.
-*   **OBS Integration:** Easily output to Virtual Camera or RTMP for broadcasting in OBS Studio.
-*   **Interactive Interruptions:** AI stops talking immediately when the user speaks (Interrupt-enabled).
-*   **Multiple Models:** Supports Wav2Lip, MuseTalk, and ERNeRF for different performance needs.
-*   **Custom Avatars:** Use any video or image to create your own digital human.
+## 🚀 Quick start
 
----
-
-## 🛠️ Quick Setup (Windows)
-
-### 1. Installation
-Ensure you have Python 3.10 and CUDA installed.
+### Cài đặt
 
 ```bash
-# Create and activate virtual environment
-.\venv_talking\Scripts\activate
-
-# Install dependencies
+git clone <repo> LiveTalking
+cd LiveTalking
 pip install -r requirements.txt
 ```
 
-### 1b. Setup cho RTX 50x (Blackwell / sm_120)
+### Khởi động
 
-RTX 5090 / 5080 / 5070 cần **PyTorch ≥ 2.7 + CUDA 12.8**. PyTorch ≤ 2.6 / cu121 sẽ chạy nhưng raise `CUDA error: no kernel image is available` ngay lần inference đầu tiên.
+```bash
+export OPENAI_API_KEY=sk-...                       # hoặc Ollama: export LLM_URL=http://host:11434/v1
+bash scripts/vastai/start.sh                       # production mode (env-driven)
 
-```powershell
-# Một lệnh cho mọi 50x SKU (driver >= 570 phải có sẵn)
-powershell -ExecutionPolicy Bypass -File .\setup_5090.ps1
+# Hoặc trực tiếp:
+python app.py --model wav2lip --avatar_id demo --tts f5tts --transport webrtc \
+  --brain_enabled true --f5_ref_audio data/avatars/demo/voice/ref.wav
 ```
 
-Hoặc làm thủ công sau khi đã `pip install -r requirements.txt`:
+### Truy cập trang quản trị
 
-```powershell
-pip install --upgrade --force-reinstall `
-    torch torchvision torchaudio `
-    --index-url https://download.pytorch.org/whl/cu128
-pip install --upgrade "onnxruntime-gpu>=1.20.0"
+`http://localhost:8010/` — SPA 5 tab:
+
+| Tab | Chức năng |
+|---|---|
+| 🔴 **Live** | TikTok auto-scrape + WebRTC viewer + comment feed realtime + stats |
+| 📦 **Sản phẩm** | CRUD bất kỳ mặt hàng nào (quần áo, điện tử, mỹ phẩm…) |
+| 🎥 **Video** | Upload + preprocess + train avatar + gesture pack |
+| 🎙️ **Âm thanh** | Upload reference voice cho F5-TTS + test TTS |
+| ⚙️ **Cài đặt** | 22 config field dynamic (brain/llm/tts/avatar/server/studio) |
+
+## 🌐 Deploy Vast.AI
+
+Vast.AI đã chạy trên Docker container, không cần build Dockerfile riêng:
+
+1. Tạo instance với base image `pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime`
+2. Mount volume `/workspace` để persist models qua restart
+3. Expose port `8010`
+4. SSH vào, chạy:
+   ```bash
+   cd /workspace && git clone <repo> LiveTalking && cd LiveTalking
+   bash scripts/vastai/setup.sh    # cài deps + download models (~10 phút)
+   bash scripts/vastai/start.sh    # production
+   ```
+
+Hoặc paste [scripts/vastai/onstart.sh](scripts/vastai/onstart.sh) vào field "On-start Script" của Vast.AI.
+
+## 🛠️ Kiến trúc
+
+Xem chi tiết: **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+```
+LiveTalking/
+├── app.py / config.py / registry.py
+├── avatars/       # MuseTalk / Wav2Lip / Ultralight
+├── tts/           # F5-TTS Vietnamese (voice cloning)
+├── brain/         # Sales brain (LLM + script_engine + comments + TikTok)
+├── server/        # aiohttp routes (brain/live/config/studio/webrtc)
+├── studio/        # Training portal (avatar/voice/gesture jobs)
+├── streamout/     # Output transports (webrtc/rtmp/virtualcam)
+├── utils/         # Logger, image, device
+├── web/           # SPA 3 file (vanilla JS, no framework)
+├── scripts/vastai/# Deploy scripts
+└── requirements.txt   # ALL deps in 1 file
 ```
 
-Kiểm tra nhanh:
+## 📡 Output
 
-```powershell
-python -c "import torch; print(torch.cuda.get_device_name(0), torch.cuda.get_arch_list())"
-# Phải thấy 'sm_120' trong arch_list nếu cài đúng torch cu128.
-```
-
-### 2. Download Models
-- **Wav2Lip:** Place `wav2lip.pth` in the `models/` directory.
-- **Avatars:** Place your avatar folders in `data/avatars/`.
-
-### 3. Run for Livestreaming
-Use the following command to start with Vietnamese support and WebRTC transport:
-
-```powershell
-python app.py --model wav2lip --avatar_id wav2lip256_avatar1 --transport webrtc --tts edgetts --REF_FILE vi-VN-HoaiMyNeural
-```
-
----
-
-## 📡 Output Options
-- **WebRTC:** Use the built-in dashboard at `http://localhost:8010/webrtcapi.html`.
-- **RTMP:** Push directly to TikTok/Bilibili/YouTube server.
-- **Virtual Camera:** Use the digital human as a system camera input for OBS.
-
----
-
-## 🏗️ Architecture
-
-```mermaid
-graph TD
-    User["User / Viewer"] -->|"Voice/Text Input"| LLM["LLM (Qwen/ChatGPT)"]
-    LLM -->|"Generated Text"| TTS["TTS (EdgeTTS/GPT-SoVITS)"]
-    TTS -->|"Vietnamese Audio"| Sync["Lip-Sync Engine"]
-    Sync -->|"Real-time Video Frames"| Stream["WebRTC / RTMP / OBS"]
-    Stream -->|"Live Content"| User
-```
-
----
+- **WebRTC**: embed trong tab Live (default)
+- **RTMP**: `--transport rtmp --push_url rtmp://your-srs/live/key` (đẩy lên TikTok / YouTube qua SRS)
+- **Virtual Cam**: `--transport virtualcam` (làm camera ảo cho OBS)
 
 ## 📝 License
-This project is licensed under the Apache 2.0 License.
 
----
-**Maintained for Vietnamese Streaming Optimization.**
+Apache 2.0

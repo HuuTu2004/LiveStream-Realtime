@@ -36,11 +36,11 @@ from aiortc import RTCPeerConnection, RTCSessionDescription,RTCIceServer,RTCConf
 from aiortc.rtcrtpsender import RTCRtpSender
 from server.webrtc import HumanPlayer
 from avatars.base_avatar import BaseAvatar
-from llm import llm_response
 import registry
 from server.routes import setup_routes
 from server.rtc_manager import RTCManager
 from server.session_manager import session_manager
+# NOTE: legacy llm.py đã bị xóa — /human chat hiện dùng brain.llm_client (xem server/routes.py)
 
 import argparse
 import random
@@ -86,9 +86,11 @@ def build_avatar_session(sessionid:str, params:dict)->BaseAvatar:
     else:
         # Default avatar loaded at startup
         avatar_this = global_avatars.get(opt.avatar_id)
-    if ref_audio: #请求参数配置了参考音频
+    if ref_audio: # request override reference audio (F5-TTS voice cloning)
         opt_this.REF_FILE = ref_audio
         opt_this.REF_TEXT = ref_text
+        opt_this.f5_ref_audio = ref_audio
+        opt_this.f5_ref_text = ref_text
     custom_config=params.get('custom_config','') #动作编排配置
     if custom_config:
         opt_this.customopt = json.loads(custom_config)
@@ -151,13 +153,55 @@ def main():
 
     #############################################################################
     appasync = web.Application(client_max_size=1024**2*100)
-    appasync["llm_response"] = llm_response
+    appasync["opt"] = opt
 
     appasync.on_shutdown.append(on_shutdown)
     appasync.router.add_post("/offer", offer)
-    
+
     # 注册 server/routes.py 中的通用 API 路由
-    setup_routes(appasync) 
+    setup_routes(appasync)
+
+    # ─── Sales Brain routes (Vietnamese livestream sales) ─────────────
+    from server.brain_routes import setup_brain_routes
+    setup_brain_routes(appasync)
+
+    # ─── Dynamic config routes (settings management qua web) ─────────
+    from server.config_routes import setup_config_routes
+    setup_config_routes(appasync)
+
+    # ─── Live management routes (TikTok scraper + brain orchestrator) ─
+    from server.live_routes import setup_live_routes
+    setup_live_routes(appasync)
+
+    # ─── Studio Portal (avatar/voice/gesture/product training UI) ─────
+    if getattr(opt, 'studio_enabled', True):
+        try:
+            from studio.routes import setup_studio_routes
+            setup_studio_routes(appasync)
+            logger.info('Studio Portal enabled at /studio/*')
+        except Exception:
+            logger.exception('Studio Portal init failed')
+
+    # ─── Auto-start brain for non-WebRTC transports if enabled ────────
+    if getattr(opt, 'brain_enabled', False) and opt.transport in ('virtualcam', 'rtmp'):
+        async def _autostart_brain():
+            try:
+                from brain.brain_manager import get_or_create_brain
+                avatar = session_manager.get_session('0')
+                if avatar is not None:
+                    brain = await get_or_create_brain(opt, avatar)
+                    await brain.start()
+                    logger.info('Auto-started brain for sessionid=0')
+            except Exception:
+                logger.exception('auto-start brain failed')
+        appasync.on_startup.append(lambda app: _autostart_brain())
+
+    # ─── Static frontend (CUỐI cùng — sau brain/studio routes) ────────
+    # `/` → index.html (admin SPA)
+    async def _serve_index(request):
+        return web.FileResponse('web/index.html')
+    appasync.router.add_get('/', _serve_index)
+    appasync.router.add_static('/', path='web')
 
     # Configure default CORS settings.
     cors = aiohttp_cors.setup(appasync, defaults={
@@ -169,15 +213,18 @@ def main():
         })
     # Configure CORS on all routes.
     for route in list(appasync.router.routes()):
-        cors.add(route)
+        try:
+            cors.add(route)
+        except (ValueError, RuntimeError):
+            # Static resources sometimes raise — skip silently
+            pass
 
-    pagename='webrtcapi.html'
-    if opt.transport=='rtmp':
-        pagename='rtmpapi.html'
-    elif opt.transport=='rtcpush':
-        pagename='rtcpushapi.html'
-    logger.info('start http server; http://<serverip>:'+str(opt.listenport)+'/'+pagename)
-    logger.info('如果使用webrtc，推荐访问webrtc集成前端: http://<serverip>:'+str(opt.listenport)+'/dashboard.html')
+    logger.info('=' * 60)
+    logger.info(f' LiveTalking Sales — http://<serverip>:{opt.listenport}/')
+    logger.info(f' Transport: {opt.transport}  |  TTS: {opt.tts}  |  Model: {opt.model}')
+    logger.info(f' Brain: {"ON" if getattr(opt, "brain_enabled", False) else "OFF"}'
+                f'  |  Studio: {"ON" if getattr(opt, "studio_enabled", True) else "OFF"}')
+    logger.info('=' * 60)
     def run_server(runner):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

@@ -70,11 +70,23 @@ class SessionManager:
         self.sessions[sessionid] = avatar_session
         
     def remove_session(self, sessionid: str):
-        """销毁会话资源"""
+        """销毁会话资源 + cleanup brain + live nếu có"""
         if sessionid in self.sessions:
             logger.info(f"Removing session {sessionid}")
-            # todo: 还可以主动调 avatar_session 释放
             self.sessions.pop(sessionid, None)
+            # Live + Brain cleanup (best-effort)
+            try:
+                from brain.brain_manager import remove_brain
+                from brain.live_manager import remove_live
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(remove_live(sessionid))
+                    asyncio.ensure_future(remove_brain(sessionid))
+                else:
+                    loop.run_until_complete(remove_live(sessionid))
+                    loop.run_until_complete(remove_brain(sessionid))
+            except Exception:
+                logger.exception(f"cleanup failed for {sessionid}")
 
 # 单例抛出
 session_manager = SessionManager()
