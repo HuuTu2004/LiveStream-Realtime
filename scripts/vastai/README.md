@@ -134,9 +134,25 @@ pip install --index-url https://download.pytorch.org/whl/cu128 \
   --force-reinstall torch torchvision torchaudio
 ```
 
-### `LMDeploy server không sẵn sàng sau 180s`
+### Muốn dùng vieneu_mode=gpu (lmdeploy TurboMind)
 
-Blackwell sm_120 cần LMDeploy ≥ 0.7. Hoặc fallback CPU/turbo:
+LMDeploy bị tách khỏi core deps vì `lmdeploy[all]` force `torch<=2.10`
+→ downgrade torch cu128 trên Blackwell. Mặc định `VIENEU_MODE=turbo`
+(0.3B model, không cần lmdeploy, chạy ngay với torch cu128).
+
+Nếu muốn thử gpu mode (max throughput, nhưng chưa stable trên Blackwell):
+
+```bash
+source venv_talking/bin/activate
+pip install lmdeploy  # KHÔNG dùng [all] để tránh torch downgrade
+# Nếu pip vẫn cố downgrade torch, force:
+#   pip install lmdeploy --no-deps && pip install <missing deps thủ công>
+
+VIENEU_MODE=gpu bash scripts/vastai/start.sh
+```
+
+Nếu LMDeploy server không sẵn sàng sau 180s → kernel sm_120 chưa
+được biên dịch trong version lmdeploy đó. Quay về:
 
 ```bash
 VIENEU_MODE=turbo bash scripts/vastai/start.sh
