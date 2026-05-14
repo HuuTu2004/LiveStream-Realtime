@@ -76,6 +76,15 @@ class RTMPOutput(BaseOutput):
         v_r, v_w = os.pipe()
         a_r, a_w = os.pipe()
 
+        # Tăng pipe buffer lên 1MB để tránh block trên video frame lớn
+        try:
+            import fcntl
+            F_SETPIPE_SZ = 1031  # Linux F_SETPIPE_SZ
+            fcntl.fcntl(v_w, F_SETPIPE_SZ, 1024 * 1024)
+            fcntl.fcntl(a_w, F_SETPIPE_SZ, 1024 * 1024)
+        except Exception as e:
+            logger.debug(f"[RTMP] F_SETPIPE_SZ failed: {e}")
+
         cmd = [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'info',
             # Low-latency flags + skip metadata probe để start nhanh
@@ -132,6 +141,16 @@ class RTMPOutput(BaseOutput):
         # Stderr reader thread — forward ffmpeg log
         self._stderr_thread = threading.Thread(target=self._pipe_stderr, daemon=True)
         self._stderr_thread.start()
+
+        # Pre-fill 0.5s silence vào audio pipe để ffmpeg probe stream nhanh
+        # (ffmpeg parse raw f32le mới open được input #1 → cần data sẵn)
+        prefill_samples = self.sample_rate // 2  # 500ms
+        prefill = np.zeros(prefill_samples, dtype=np.float32)
+        try:
+            os.write(self._audio_fd_w, prefill.tobytes())
+            self._audio_samples_written = prefill_samples
+        except OSError as e:
+            logger.warning(f"[RTMP] audio prefill failed: {e}")
 
         self._starttime = time.perf_counter()
         self._totalframe = 0
