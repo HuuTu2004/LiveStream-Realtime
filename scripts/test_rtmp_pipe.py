@@ -2,12 +2,7 @@
 """Standalone test cho rtmp.py logic — feed synthetic video+audio qua pipe vào
 ffmpeg subprocess, verify RTMP push tới MediaMTX.
 
-Chạy:
-    cd /workspace/LiveTalking
-    python scripts/test_rtmp_pipe.py rtmp://localhost:1935/live/test
-
-Nếu MediaMTX hiển thị "is publishing to path 'live/test'" + stay online → OK.
-Nếu close: EOF nhanh → cấu hình ffmpeg/pipe có vấn đề.
+V2: pre-fill 10s silence + audio write trong thread riêng để không block video.
 """
 
 import os
@@ -26,17 +21,35 @@ def stderr_reader(proc):
             print(f"[ffmpeg] {line}", flush=True)
 
 
+def audio_writer(audio_fd: int, sr: int, stop_event: threading.Event):
+    """Liên tục đẩy silence vào audio pipe để ffmpeg không stall."""
+    chunk_samples = sr // 25  # 40ms chunks = 1 video frame worth
+    silence = np.zeros(chunk_samples, dtype=np.float32).tobytes()
+    next_t = time.perf_counter()
+    written = 0
+    while not stop_event.is_set():
+        try:
+            os.write(audio_fd, silence)
+            written += chunk_samples
+        except BrokenPipeError:
+            print(f"[audio-thread] BrokenPipe after {written} samples", flush=True)
+            return
+        next_t += chunk_samples / sr
+        delay = next_t - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+    print(f"[audio-thread] stopped after {written} samples", flush=True)
+
+
 def main():
     url = sys.argv[1] if len(sys.argv) > 1 else 'rtmp://localhost:1935/live/test'
     w, h = 576, 768
     fps = 25
     sr = 16000
 
-    # 2 OS pipes
     v_r, v_w = os.pipe()
     a_r, a_w = os.pipe()
 
-    # 1MB pipe buffers
     try:
         import fcntl
         F_SETPIPE_SZ = 1031
@@ -47,8 +60,7 @@ def main():
 
     cmd = [
         'ffmpeg', '-y', '-hide_banner', '-loglevel', 'info',
-        '-fflags', '+nobuffer+flush_packets',
-        '-flags', 'low_delay',
+        '-fflags', '+nobuffer',
         '-probesize', '32',
         '-analyzeduration', '0',
         '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{w}x{h}', '-r', str(fps),
@@ -61,10 +73,9 @@ def main():
         '-pix_fmt', 'yuv420p', '-b:v', '2000000',
         '-g', str(fps * 2),
         '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
-        '-flush_packets', '1',
         '-f', 'flv', url,
     ]
-    print(f"[test] cmd:\n  {' '.join(cmd)}\n")
+    print(f"[test] cmd:\n  {' '.join(cmd)}\n", flush=True)
 
     proc = subprocess.Popen(
         cmd,
@@ -78,65 +89,49 @@ def main():
 
     threading.Thread(target=stderr_reader, args=(proc,), daemon=True).start()
 
-    # Pre-fill 0.5s silence
-    prefill = np.zeros(sr // 2, dtype=np.float32)
-    os.write(a_w, prefill.tobytes())
-    print(f"[test] prefilled {len(prefill)} silence samples")
-    audio_samples_written = len(prefill)
+    # Audio thread liên tục đẩy silence — không bị block bởi video write
+    stop_event = threading.Event()
+    audio_thread = threading.Thread(
+        target=audio_writer, args=(a_w, sr, stop_event), daemon=True
+    )
+    audio_thread.start()
+    print("[test] audio thread started", flush=True)
 
-    # Generate 100 synthetic frames (4s @ 25fps)
-    samples_per_frame = sr // fps  # 640
+    # Main thread chỉ ghi video — không bị tranh chấp lock với audio
     start = time.perf_counter()
     for i in range(100):
         if proc.poll() is not None:
-            print(f"[test] ffmpeg exited early at frame {i}, returncode={proc.returncode}")
+            print(f"[test] ffmpeg exited at frame {i}, rc={proc.returncode}", flush=True)
             break
-        # Synthetic frame: gradient based on i
-        frame = np.full((h, w, 3), i * 2 % 255, dtype=np.uint8)
+        frame = np.full((h, w, 3), (i * 5) % 255, dtype=np.uint8)
         try:
             os.write(v_w, frame.tobytes())
         except BrokenPipeError:
-            print(f"[test] BrokenPipeError on video at frame {i}")
+            print(f"[test] BrokenPipe video frame {i}", flush=True)
             break
 
-        # Audio sync: pad silence to match video time
-        expected = int((i + 1) * sr / fps)
-        pad = expected - audio_samples_written
-        if pad > 0:
-            silence = np.zeros(pad, dtype=np.float32)
-            try:
-                os.write(a_w, silence.tobytes())
-                audio_samples_written += pad
-            except BrokenPipeError:
-                print(f"[test] BrokenPipeError on audio at frame {i}")
-                break
-
-        # Frame pacing
-        target_time = start + (i + 1) / fps
-        delay = target_time - time.perf_counter()
+        target = start + (i + 1) / fps
+        delay = target - time.perf_counter()
         if delay > 0:
             time.sleep(delay)
 
-        if i % 25 == 0:
-            print(f"[test] frame {i}, ffmpeg alive={proc.poll() is None}")
+        if i % 25 == 0 or i == 99:
+            print(f"[test] frame {i}, ffmpeg alive={proc.poll() is None}", flush=True)
 
     elapsed = time.perf_counter() - start
-    print(f"\n[test] done. {i+1} frames in {elapsed:.2f}s ({(i+1)/elapsed:.1f} fps)")
+    print(f"[test] done {i+1} frames in {elapsed:.2f}s", flush=True)
 
-    # Close pipes + wait
+    stop_event.set()
     try:
         os.close(v_w)
         os.close(a_w)
     except OSError:
         pass
-
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.terminate()
-        proc.wait(timeout=5)
-
-    print(f"[test] ffmpeg final returncode={proc.returncode}")
+    print(f"[test] ffmpeg rc={proc.returncode}", flush=True)
 
 
 if __name__ == '__main__':
