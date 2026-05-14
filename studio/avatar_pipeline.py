@@ -147,22 +147,6 @@ async def train(avatar_id: str, model: str, epochs: int, workdir: str) -> str:
     return job.id
 
 
-async def preview(avatar_id: str, text: str, workdir: str) -> dict:
-    """Render 5s preview MP4 bằng cách spawn worker render độc lập."""
-    reg = get_registry()
-    out_path = os.path.join(workdir, "previews", f"{avatar_id}_{int(asyncio.get_event_loop().time())}.mp4")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    job = reg.create("avatar_preview", meta={"avatar_id": avatar_id, "text": text, "output": out_path})
-    args = [
-        sys.executable, "-u", "-m", "studio.workers.preview_avatar",
-        "--avatar_id", avatar_id,
-        "--text", text,
-        "--output", out_path,
-    ]
-    asyncio.create_task(_run_subprocess_job(job.id, args))
-    return {"job_id": job.id, "output": out_path}
-
-
 def delete_avatar(avatar_id: str) -> bool:
     adir = _avatar_dir(avatar_id)
     if not os.path.isdir(adir):

@@ -121,20 +121,6 @@ async def avatar_train(request):
         return err(str(e))
 
 
-async def avatar_preview(request):
-    try:
-        params = await request.json()
-        avatar_id = _sanitize_avatar_id(params.get("avatar_id", ""))
-        text = (params.get("text") or "").strip()
-        if not text:
-            return err("missing 'text'")
-        res = await avatar_pipeline.preview(avatar_id, text, _workdir(request))
-        return ok(res)
-    except Exception as e:
-        log.exception("avatar_preview")
-        return err(str(e))
-
-
 async def avatar_delete(request):
     try:
         params = await request.json()
@@ -450,7 +436,6 @@ def setup_studio_routes(app):
     app.router.add_post("/studio/avatar/upload", avatar_upload)
     app.router.add_post("/studio/avatar/preprocess", avatar_preprocess)
     app.router.add_post("/studio/avatar/train", avatar_train)
-    app.router.add_post("/studio/avatar/preview", avatar_preview)
     app.router.add_post("/studio/avatar/delete", avatar_delete)
 
     # Voice

@@ -96,7 +96,7 @@ bash scripts/vastai/start.sh
 | ----------------- | ------------------------ | ------------------------------------------------ |
 | `AVATAR_MODEL`    | `wav2lip`                | `wav2lip` / `musetalk` / `ultralight`            |
 | `AVATAR_ID`       | `wav2lip256_avatar1`     | Folder trong `data/avatars/`                     |
-| `TTS_ENGINE`      | `vieneu`                 | `vieneu` / `f5tts`                               |
+| `TTS_ENGINE`      | `vieneu`                 | `vieneu` (Apache 2.0, Vietnamese)                |
 | `VIENEU_MODE`     | `gpu`                    | `gpu` (lmdeploy) / `standard` / `turbo` / `remote` |
 | `TRANSPORT`       | `webrtc`                 | `webrtc` / `rtmp` / `virtualcam` / `rtcpush`     |
 | `LISTEN_PORT`     | `8010`                   | Web + signaling                                  |

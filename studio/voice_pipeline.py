@@ -1,8 +1,8 @@
-"""Voice pipeline: upload reference WAV + transcript cho F5-TTS voice cloning.
+"""Voice pipeline: upload reference WAV + transcript cho VieNeu-TTS voice cloning.
 
 Validate file:
 - Format: WAV (PCM 16/24-bit), mono hoặc stereo (sẽ down-mix).
-- Duration: 5-30s (F5-TTS optimal cho zero-shot).
+- Duration: 3-30s (VieNeu optimal cho zero-shot, 3-5s là đủ).
 - Sample rate: bất kỳ (sẽ resample về 24kHz khi infer).
 
 Lưu vào: data/avatars/{avatar_id}/voice/ref.wav + ref.txt
@@ -21,7 +21,7 @@ import soundfile as sf
 
 log = logging.getLogger(__name__)
 
-REF_SR = 24000  # F5-TTS native
+REF_SR = 24000  # VieNeu-TTS native
 MIN_SECS = 3.0
 MAX_SECS = 30.0
 

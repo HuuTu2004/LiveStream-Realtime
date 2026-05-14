@@ -7,7 +7,7 @@
 #  Env vars (đều có default an toàn):
 #    AVATAR_ID         (default: wav2lip256_avatar1)
 #    AVATAR_MODEL      wav2lip | musetalk | ultralight   (default: wav2lip)
-#    TTS_ENGINE        vieneu | f5tts                     (default: vieneu)
+#    TTS_ENGINE        vieneu                              (default: vieneu)
 #    VIENEU_MODE       gpu | standard | turbo | remote    (default: gpu)
 #    TRANSPORT         webrtc | rtmp | virtualcam | rtcpush (default: webrtc)
 #    LISTEN_PORT       (default: 8010)
@@ -53,9 +53,6 @@ VIENEU_REF_AUDIO="${VIENEU_REF_AUDIO:-${VIENEU_REF_AUDIO_DEFAULT}}"
 VIENEU_REF_TEXT="${VIENEU_REF_TEXT:-}"
 [[ -z "${VIENEU_REF_TEXT}" && -f "${VIENEU_REF_TEXT_FILE}" ]] && VIENEU_REF_TEXT="$(cat "${VIENEU_REF_TEXT_FILE}")"
 
-F5_REF_AUDIO="${F5_REF_AUDIO:-${VIENEU_REF_AUDIO_DEFAULT}}"
-F5_REF_TEXT="${F5_REF_TEXT:-${VIENEU_REF_TEXT}}"
-
 # Sanity
 if [[ ! -d "data/avatars/${AVATAR_ID}" ]]; then
   echo "[WARN] data/avatars/${AVATAR_ID} chưa có. Server vẫn start nhưng /offer sẽ fail."
@@ -89,8 +86,6 @@ if [[ "${TTS_ENGINE}" == "vieneu" ]]; then
   [[ -n "${VIENEU_REF_TEXT}" ]] && ARGS+=(--vieneu_ref_text "${VIENEU_REF_TEXT}")
   [[ "${VIENEU_MODE}" == "gpu" ]] && \
     echo "[start] VieNeu GPU mode — auto-spawn lmdeploy:${VIENEU_PORT} (lần đầu ~30-60s)"
-elif [[ "${TTS_ENGINE}" == "f5tts" ]]; then
-  ARGS+=(--f5_ref_audio "${F5_REF_AUDIO}" --f5_ref_text "${F5_REF_TEXT}")
 fi
 
 if [[ "${TRANSPORT}" == "rtmp" ]]; then

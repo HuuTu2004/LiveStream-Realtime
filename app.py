@@ -86,11 +86,11 @@ def build_avatar_session(sessionid:str, params:dict)->BaseAvatar:
     else:
         # Default avatar loaded at startup
         avatar_this = global_avatars.get(opt.avatar_id)
-    if ref_audio: # request override reference audio (F5-TTS voice cloning)
+    if ref_audio: # request override reference audio (voice cloning)
         opt_this.REF_FILE = ref_audio
         opt_this.REF_TEXT = ref_text
-        opt_this.f5_ref_audio = ref_audio
-        opt_this.f5_ref_text = ref_text
+        opt_this.vieneu_ref_audio = ref_audio
+        opt_this.vieneu_ref_text = ref_text
     custom_config=params.get('custom_config','') #动作编排配置
     if custom_config:
         opt_this.customopt = json.loads(custom_config)

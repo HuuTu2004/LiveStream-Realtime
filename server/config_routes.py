@@ -33,8 +33,8 @@ SETTINGS_PATH = os.environ.get("LIVETALKING_SETTINGS_PATH", "data/settings.json"
 CONFIG_SCHEMA: dict[str, dict] = {
     # ─── TTS / Voice ───────────────────────────────────────────────
     "tts": {"type": "str", "group": "tts", "restart": True,
-            "choices": ["vieneu", "f5tts"],
-            "description": "TTS engine: vieneu (Apache 2.0, realtime CPU) | f5tts (cao hơn nhưng non-commercial)"},
+            "choices": ["vieneu"],
+            "description": "TTS engine: vieneu (Apache 2.0, realtime CPU/GPU)"},
     # VieNeu-TTS
     "vieneu_mode": {"type": "str", "group": "tts", "restart": True,
                     "choices": ["gpu", "standard", "turbo", "remote"],
@@ -56,16 +56,6 @@ CONFIG_SCHEMA: dict[str, dict] = {
                         "description": "(remote mode) external lmdeploy URL. Trống = auto-spawn local"},
     "vieneu_model_name": {"type": "str", "group": "tts", "restart": True,
                           "description": "HF repo cho gpu/remote mode (default pnnbao-ump/VieNeu-TTS-v2)"},
-    # F5-TTS
-    "f5_ref_audio": {"type": "str", "group": "tts", "restart": False,
-                     "description": "F5-TTS reference WAV (5-15s)"},
-    "f5_ref_text": {"type": "str", "group": "tts", "restart": False,
-                    "description": "Transcript của F5-TTS reference"},
-    "f5_model_path": {"type": "str", "group": "tts", "restart": True,
-                      "description": "F5-TTS model (HF repo hoặc local path)"},
-    "f5_vocoder": {"type": "str", "group": "tts", "restart": True,
-                   "choices": ["vocos", "bigvgan"],
-                   "description": "Vocoder cho F5-TTS"},
 
     # ─── Sales Brain ───────────────────────────────────────────────
     "brain_enabled": {"type": "bool", "group": "brain", "restart": False,
@@ -252,7 +242,8 @@ async def config_set(request):
 
         # Brain auto-reload nếu có brain field đổi và brain đang chạy
         brain_fields = {"brain_enabled", "products_path", "persona", "silence_gap_secs",
-                        "llm_url", "llm_model", "llm_api_key", "f5_ref_audio", "f5_ref_text"}
+                        "llm_url", "llm_model", "llm_api_key",
+                        "vieneu_ref_audio", "vieneu_ref_text"}
         brain_changed = bool(set(changed.keys()) & brain_fields)
         if brain_changed:
             try:

@@ -65,10 +65,6 @@ else
   echo "[VieNeu] WARN: lmdeploy chưa cài. Sửa requirements.txt rồi pip install -r requirements.txt"
 fi
 
-# ─── F5-TTS Vietnamese (optional, non-commercial) ────────────────────
-hf_snapshot "hynt/F5-TTS-Vietnamese-ViVoice" "${MODELS_DIR}/f5tts_vi" || true
-hf_snapshot "charactr/vocos-mel-24khz" "${MODELS_DIR}/vocos" || true
-
 # ─── Sample products.json ─────────────────────────────────────────────
 if [[ ! -f "data/products.json" ]]; then
   mkdir -p data

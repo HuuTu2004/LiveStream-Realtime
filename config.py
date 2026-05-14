@@ -49,10 +49,9 @@ def parse_args():
                         help="custom action json")
 
     # ─── TTS engine ────────────────────────────────────────────────────
-    # `vieneu` (default) — Apache 2.0, realtime CPU, voice clone 3-5s ref
-    # `f5tts`            — chất lượng cao hơn nhưng CC-BY-NC-SA (chỉ research)
+    # `vieneu` — Apache 2.0, realtime CPU/GPU, voice clone 3-5s ref.
     parser.add_argument('--tts', type=str, default='vieneu',
-                        help="tts plugin: vieneu | f5tts")
+                        help="tts plugin: vieneu")
 
     # Legacy refs (giữ để compat với code đọc opt.REF_FILE)
     parser.add_argument('--REF_FILE', type=str, default='',
@@ -82,17 +81,6 @@ def parse_args():
                         help="(gpu mode) Local port cho lmdeploy api_server")
     parser.add_argument('--vieneu_tp', type=int, default=1,
                         help="(gpu mode) Tensor parallel size (1 GPU = 1; 2 GPU = 2)")
-
-    # ─── F5-TTS Vietnamese (alternative, non-commercial only) ──────────
-    parser.add_argument('--f5_ref_audio', type=str, default='',
-                        help="F5-TTS reference WAV (5-15s) cho voice cloning")
-    parser.add_argument('--f5_ref_text', type=str, default='',
-                        help="Transcript của f5_ref_audio")
-    parser.add_argument('--f5_model_path', type=str,
-                        default='hf://hynt/F5-TTS-Vietnamese-ViVoice',
-                        help="HF repo hoặc local path tới F5-TTS Vietnamese checkpoint")
-    parser.add_argument('--f5_vocoder', type=str, default='vocos',
-                        help="F5-TTS vocoder: vocos hoặc bigvgan")
 
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='webrtc',

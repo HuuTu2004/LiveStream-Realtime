@@ -86,23 +86,45 @@ function Send-Scp([string]$LocalPath, [string]$RemotePath) {
   if ($LASTEXITCODE -ne 0) { throw "scp failed: exit $LASTEXITCODE" }
 }
 
+function Send-AvatarViaTarSsh([string]$AvatarParent, [string]$AvatarId, [string]$RemoteDir) {
+  # tar+ssh stream — nhanh hơn scp ~5x cho dir nhiều file nhỏ (face_imgs/full_imgs)
+  Write-Host "[tar] streaming avatar $AvatarId qua ssh (nhanh hơn scp cho many small files)..." -ForegroundColor Cyan
+  $tarCmd = "tar -cf - -C `"$AvatarParent`" $AvatarId | ssh -i `"$KeyPath`" -o StrictHostKeyChecking=accept-new -p $Port $User@$InstanceHost `"tar -xf - -C $RemoteDir/data/avatars/`""
+  # Dùng bash để chạy pipe (PowerShell native pipe không support binary stream tốt)
+  $bash = (Get-Command bash -ErrorAction SilentlyContinue).Source
+  if (-not $bash) { $bash = "C:\Program Files\Git\bin\bash.exe" }
+  if (-not (Test-Path $bash)) {
+    Write-Warning "[tar] bash không có — fallback scp -r (chậm hơn)"
+    Send-Scp (Join-Path $AvatarParent $AvatarId) "$RemoteDir/data/avatars/"
+    return
+  }
+  & $bash -c $tarCmd
+  if ($LASTEXITCODE -ne 0) { throw "tar+ssh failed: exit $LASTEXITCODE" }
+  Write-Host "[tar] done" -ForegroundColor Green
+}
+
 # ─── 1. Test SSH ───────────────────────────────────────────────────────────
 Write-Host "`n[1/4] Test SSH connection..." -ForegroundColor Yellow
 Invoke-Ssh "echo CONNECTED; uname -a; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader"
 
 # ─── 2. Git clone/pull repo ────────────────────────────────────────────────
-Write-Host "`n[2/4] Git clone/pull repo trên instance..." -ForegroundColor Yellow
+Write-Host "`n[2/4] Git sync repo trên instance..." -ForegroundColor Yellow
 $RemoteRepo = 'https://github.com/HuuTu2004/LiveStream-Realtime.git'
+# Init + fetch + reset pattern — handle:
+#   (a) dir empty/missing → init mới
+#   (b) dir tồn tại + có file (vd. từ scp models/) nhưng no .git → init tại chỗ
+#   (c) dir đã là git repo → fetch + reset
 Invoke-Ssh @"
 set -e
-mkdir -p /workspace
-cd /workspace
-if [ ! -d $RemoteDir/.git ]; then
-  git clone --depth 1 $RemoteRepo $RemoteDir
-else
-  cd $RemoteDir && git pull --rebase --autostash
+mkdir -p $RemoteDir
+cd $RemoteDir
+if [ ! -d .git ]; then
+  git init -q
+  git remote add origin $RemoteRepo 2>/dev/null || git remote set-url origin $RemoteRepo
 fi
-cd $RemoteDir && git log -1 --oneline
+git fetch --depth 1 origin main
+git checkout -B main FETCH_HEAD
+git log -1 --oneline
 mkdir -p models data/avatars
 "@
 
@@ -124,15 +146,23 @@ if (-not $SkipAssets) {
     Write-Warning "models\wav2lip.pth không tồn tại — server sẽ tự pull từ HF mirror."
   }
 
-  $AvatarDir = Join-Path $LiveTalking "data\avatars\$AvatarId"
+  $AvatarParent = Join-Path $LiveTalking "data\avatars"
+  $AvatarDir = Join-Path $AvatarParent $AvatarId
   if (Test-Path $AvatarDir) {
     Invoke-Ssh "mkdir -p $RemoteDir/data/avatars"
-    # Check remote dir exists + has data
+    # Skip nếu remote dir đã có files (count > 0)
     $RemoteCount = (& ssh @SshArgs "find $RemoteDir/data/avatars/$AvatarId -type f 2>/dev/null | wc -l").Trim()
     if ([int]$RemoteCount -gt 0) {
-      Write-Host "[scp] avatar $AvatarId đã tồn tại remote ($RemoteCount files) — skip" -ForegroundColor DarkGreen
+      $LocalCount = (Get-ChildItem -Recurse -File $AvatarDir).Count
+      if ([int]$RemoteCount -ge $LocalCount) {
+        Write-Host "[avatar] skip — remote đã có $RemoteCount files (local $LocalCount)" -ForegroundColor DarkGreen
+      } else {
+        Write-Warning "[avatar] remote có $RemoteCount/$LocalCount files — partial upload, xóa + re-upload"
+        Invoke-Ssh "rm -rf $RemoteDir/data/avatars/$AvatarId"
+        Send-AvatarViaTarSsh $AvatarParent $AvatarId $RemoteDir
+      }
     } else {
-      Send-Scp $AvatarDir "$RemoteDir/data/avatars/"
+      Send-AvatarViaTarSsh $AvatarParent $AvatarId $RemoteDir
     }
   } else {
     Write-Warning "Avatar dir $AvatarDir không tồn tại."

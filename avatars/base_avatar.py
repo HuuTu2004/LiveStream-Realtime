@@ -100,11 +100,9 @@ class BaseAvatar:
         self.res_frame_queue = Queue(self.batch_size*2)
         self.render_event = Event()
 
-        # TTS plugin: 2 lựa chọn — VieNeu-TTS (default, realtime CPU, Apache 2.0)
-        # hoặc F5-TTS (chất lượng cảm xúc cao hơn, GPU-only, CC-BY-NC-SA = non-commercial)
+        # TTS plugin: VieNeu-TTS (Apache 2.0, realtime, voice clone 3-5s ref)
         _tts_modules = {
             'vieneu': 'tts.vieneu',
-            'f5tts': 'tts.f5tts',
         }
 
         tts_name = getattr(opt, 'tts', 'vieneu')
@@ -349,7 +347,7 @@ class BaseAvatar:
             return
         if eventpoint.get('status'):
             logger.info("notify:%s", eventpoint)
-        # Gesture dispatch (from F5-TTS / TTS eventpoint piggyback)
+        # Gesture dispatch (from TTS eventpoint piggyback)
         gname = eventpoint.get('gesture') if isinstance(eventpoint, dict) else None
         if gname and self.gesture_cycles:
             ok = self.set_gesture(gname)
@@ -514,7 +512,7 @@ class BaseAvatar:
                 continue
 
             # ─── Gesture dispatch từ eventpoint piggyback ──────────────
-            # F5-TTS plugin gắn eventpoint['gesture']='wave' ở chunk đầu mỗi câu.
+            # TTS plugin có thể gắn eventpoint['gesture']='wave' ở chunk đầu mỗi câu.
             # Audio chunk → AudioFrameData.userdata mang eventpoint xuyên suốt pipeline.
             for af in audio_frames:
                 ud = af.userdata or {}

@@ -263,13 +263,13 @@ class VieNeuTTS(BaseTTS):
         self._default_ref_audio = (getattr(opt, "vieneu_ref_audio", "") or "").strip()
         self._default_ref_text = (getattr(opt, "vieneu_ref_text", "") or "").strip()
 
-        # Fallback ref từ f5_ref_audio (khỏi setup lại)
+        # Fallback ref từ legacy REF_FILE (compat với code cũ)
         if not self._default_ref_audio and not self._default_voice_id:
-            f5_ref = getattr(opt, "f5_ref_audio", "")
-            if f5_ref and os.path.exists(f5_ref):
-                self._default_ref_audio = f5_ref
-                self._default_ref_text = getattr(opt, "f5_ref_text", "") or ""
-                logger.info(f"[VieNeu] Fallback dùng f5_ref_audio: {f5_ref}")
+            legacy_ref = getattr(opt, "REF_FILE", "")
+            if legacy_ref and os.path.exists(legacy_ref):
+                self._default_ref_audio = legacy_ref
+                self._default_ref_text = getattr(opt, "REF_TEXT", "") or ""
+                logger.info(f"[VieNeu] Fallback dùng REF_FILE: {legacy_ref}")
 
         self._infer_lock = threading.Lock()
         logger.info(
