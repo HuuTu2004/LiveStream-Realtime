@@ -56,6 +56,10 @@ class RTMPOutput(BaseOutput):
         self.width = getattr(opt, 'W', 450)
         self.height = getattr(opt, 'H', 450)
 
+        # Audio/video sync — đếm để pad silence khi avatar idle
+        self._video_frame_count = 0
+        self._audio_samples_written = 0
+
         # FPS stats
         self.framecount = 0
         self.lasttime = time.perf_counter()
@@ -73,17 +77,22 @@ class RTMPOutput(BaseOutput):
         a_r, a_w = os.pipe()
 
         cmd = [
-            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'warning',
+            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'info',
+            # Low-latency flags cho live streaming
+            '-fflags', '+nobuffer+flush_packets',
+            '-flags', 'low_delay',
             # Video input (rgb24 raw, được Python feed qua v_r)
             '-f', 'rawvideo',
             '-pix_fmt', 'rgb24',
             '-s', f'{w}x{h}',
             '-r', str(self.fps),
+            '-thread_queue_size', '512',
             '-i', f'pipe:{v_r}',
             # Audio input (float32 little-endian mono, từ a_r)
             '-f', 'f32le',
             '-ar', str(self.sample_rate),
             '-ac', '1',
+            '-thread_queue_size', '512',
             '-i', f'pipe:{a_r}',
             # Video encode: x264 zerolatency cho real-time
             '-c:v', 'libx264',
@@ -98,6 +107,7 @@ class RTMPOutput(BaseOutput):
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
+            '-flush_packets', '1',
             # Output FLV qua RTMP
             '-f', 'flv',
             self.push_url,
@@ -154,6 +164,7 @@ class RTMPOutput(BaseOutput):
                     buf = self._audio_queue.get()
                     try:
                         os.write(self._audio_fd_w, buf.tobytes())
+                        self._audio_samples_written += len(buf)
                     except OSError:
                         break
 
@@ -165,6 +176,21 @@ class RTMPOutput(BaseOutput):
                 logger.error("[RTMP] ffmpeg pipe broken — subprocess died")
                 self._cleanup_proc()
                 return
+            self._video_frame_count += 1
+
+            # Sync audio: pad silence nếu audio fell behind expected video time
+            # ffmpeg với 2 raw inputs cần cả 2 stream tiến đều — không có audio
+            # thì mux pipeline đứng. Khi avatar idle (no TTS), audio không đến →
+            # ta tự pad silence ở đây.
+            expected_samples = int(self._video_frame_count * self.sample_rate / self.fps)
+            samples_to_pad = expected_samples - self._audio_samples_written
+            if samples_to_pad > 0 and self._audio_fd_w is not None:
+                silence = np.zeros(samples_to_pad, dtype=np.float32)
+                try:
+                    os.write(self._audio_fd_w, silence.tobytes())
+                    self._audio_samples_written += samples_to_pad
+                except (BrokenPipeError, OSError):
+                    pass
 
         # Frame pacing — giữ đúng fps
         delay = self._starttime + self._totalframe / self.fps - time.perf_counter()
@@ -195,10 +221,12 @@ class RTMPOutput(BaseOutput):
             self._audio_queue.put(frame)
             return
 
-        try:
-            os.write(self._audio_fd_w, frame.tobytes())
-        except BrokenPipeError:
-            return
+        with self._lock:
+            try:
+                os.write(self._audio_fd_w, frame.tobytes())
+                self._audio_samples_written += len(frame)
+            except BrokenPipeError:
+                return
 
         if self.parent and eventpoint:
             self.parent.notify(eventpoint)
