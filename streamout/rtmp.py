@@ -59,14 +59,16 @@ class RTMPOutput(BaseOutput):
         self._video_fd_w: Optional[int] = None
         self._audio_fd_w: Optional[int] = None
         self._stderr_thread: Optional[threading.Thread] = None
-        self._audio_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
         self.width = getattr(opt, 'W', 450)
         self.height = getattr(opt, 'H', 450)
 
-        # Mỗi audio chunk = 1 video frame tương đương = sample_rate / fps samples
-        self._chunk_samples = self.sample_rate // self.fps
+        # Audio buffer + sync — single-thread architecture:
+        # per video frame, drain audio queue và write 1 chunk audio đồng bộ.
+        self._chunk_samples = self.sample_rate // self.fps  # 640 @ 16kHz/25fps
+        self._audio_buf = np.empty(0, dtype=np.float32)
+        self._silence_chunk_bytes = np.zeros(self._chunk_samples, dtype=np.float32).tobytes()
 
         # FPS stats
         self.framecount = 0
@@ -176,9 +178,12 @@ class RTMPOutput(BaseOutput):
         self._stderr_thread = threading.Thread(target=self._pipe_stderr, daemon=True)
         self._stderr_thread.start()
 
-        # Audio writer thread — tick 40ms (1 video frame) liên tục
-        self._audio_thread = threading.Thread(target=self._audio_writer_loop, daemon=True)
-        self._audio_thread.start()
+        # Pre-fill 0.5s silence để ffmpeg probe input #1 nhanh
+        prefill = np.zeros(self.sample_rate // 2, dtype=np.float32)
+        try:
+            os.write(self._audio_fd_w, prefill.tobytes())
+        except OSError as e:
+            logger.warning(f"[RTMP] audio prefill failed: {e}")
 
         self._starttime = time.perf_counter()
         self._totalframe = 0
@@ -201,60 +206,36 @@ class RTMPOutput(BaseOutput):
             else:
                 logger.debug(f"[ffmpeg] {line}")
 
-    def _audio_writer_loop(self) -> None:
-        """Tick 40ms — drain queue, write FIXED 640 samples/tick (16kHz × 40ms).
+    def _write_audio_chunk(self) -> None:
+        """Per video frame: drain queue + write exactly chunk_samples to audio pipe.
 
-        Cần consistent rate vì ffmpeg `-ar 16000` mong 16000 samples/s wall-clock.
-        - Drain queue into buffer
-        - Write exactly self._chunk_samples per tick
-        - Pad silence nếu buffer < chunk_samples
-        - Giữ phần dư trong buffer cho tick sau (TTS push 50Hz, ta tick 25Hz → buffer up)
+        Sync với video: gọi 1 lần mỗi push_video_frame để audio & video tiến đều.
+        Buffer phần dư trong self._audio_buf (avatar push 320-sample chunks,
+        ta cần 640 mỗi frame → cần 2 chunks).
         """
-        chunk_dur = self._chunk_samples / self.sample_rate
-        buf = np.empty(0, dtype=np.float32)
-        silence_pad = np.zeros(self._chunk_samples, dtype=np.float32)
-        next_tick = time.perf_counter()
-        real_samples = 0
-        silence_samples = 0
-
-        while not self._stop_event.is_set():
-            # Drain queue (non-blocking) — gom đủ samples cho tick này
-            while buf.size < self._chunk_samples:
-                try:
-                    data = self._audio_queue.get_nowait()
-                except queue.Empty:
-                    break
-                if data.size > 0:
-                    buf = np.concatenate([buf, data])
-                    real_samples += data.size
-
-            # Build payload — đúng chunk_samples mỗi tick
-            if buf.size >= self._chunk_samples:
-                payload = buf[:self._chunk_samples]
-                buf = buf[self._chunk_samples:]
-            else:
-                # Thiếu — pad silence để đủ
-                pad_size = self._chunk_samples - buf.size
-                payload = np.concatenate([buf, silence_pad[:pad_size]])
-                silence_samples += pad_size
-                buf = np.empty(0, dtype=np.float32)
-
-            if self._audio_fd_w is None:
-                break
+        # Drain queue cho đủ chunk_samples
+        while self._audio_buf.size < self._chunk_samples:
             try:
-                os.write(self._audio_fd_w, payload.tobytes())
-            except (BrokenPipeError, OSError):
-                logger.debug("[RTMP] audio pipe closed")
+                data = self._audio_queue.get_nowait()
+            except queue.Empty:
                 break
+            if data.size > 0:
+                self._audio_buf = np.concatenate([self._audio_buf, data])
 
-            next_tick += chunk_dur
-            delay = next_tick - time.perf_counter()
-            if delay > 0:
-                time.sleep(delay)
-            elif delay < -0.5:
-                next_tick = time.perf_counter()
+        if self._audio_fd_w is None:
+            return
 
-        logger.info(f"[RTMP] audio thread exit (real={real_samples}, silence={silence_samples})")
+        if self._audio_buf.size >= self._chunk_samples:
+            payload = self._audio_buf[:self._chunk_samples].tobytes()
+            self._audio_buf = self._audio_buf[self._chunk_samples:]
+        else:
+            # Silence fill cho frame này
+            payload = self._silence_chunk_bytes
+
+        try:
+            os.write(self._audio_fd_w, payload)
+        except (BrokenPipeError, OSError):
+            pass
 
     # ------------------------------------------------------------------
     def push_video_frame(self, frame) -> None:
@@ -273,6 +254,10 @@ class RTMPOutput(BaseOutput):
             logger.error("[RTMP] video pipe broken — ffmpeg died")
             self._cleanup_proc()
             return
+
+        # Audio sync: write CHÍNH XÁC 1 chunk audio cho video frame này.
+        # → audio & video tiến đều, không drift do thread khác clock.
+        self._write_audio_chunk()
 
         # Frame pacing — giữ đúng fps (tránh push nhanh hơn fps gây buffer bloat)
         delay = self._starttime + self._totalframe / self.fps - time.perf_counter()
