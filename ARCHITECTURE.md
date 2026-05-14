@@ -24,7 +24,8 @@ LiveTalking/
 │
 ├── tts/                        # 🎙️ TTS plugins
 │   ├── base_tts.py             # BaseTTS contract
-│   └── f5tts.py                # F5-TTS Vietnamese (voice cloning, only TTS supported)
+│   ├── vieneu.py               # VieNeu-TTS (DEFAULT — Apache 2.0, realtime CPU, voice clone 3-5s)
+│   └── f5tts.py                # F5-TTS (alternative — chất lượng cao hơn, CC-BY-NC-SA non-commercial)
 │
 ├── streamout/                  # 📡 Output transports
 │   ├── base_output.py
@@ -197,6 +198,12 @@ Per-session render thread (BaseAvatar.render)
 
 F5-TTS infer
   └─ Sync within TTS render thread (BaseTTS.process_tts) — singleton model, internal lock
+
+VieNeu GPU mode
+  ├─ Local lmdeploy subprocess (port 23333)         (spawn by plugin at __init__)
+  │   └─ TurboMind engine — async batching, KV cache, FlashAttn
+  └─ Plugin client (per-session)
+      └─ HTTP call → 127.0.0.1:23333/v1 → response audio bytes
 ```
 
 ## Tech stack
@@ -204,7 +211,11 @@ F5-TTS infer
 - **Server**: Python 3.10+, aiohttp (single process)
 - **GPU**: PyTorch 2.3 + CUDA 12.1
 - **Avatar**: MuseTalk (Stable Diffusion based) / Wav2Lip (GAN-based) / Ultralight
-- **TTS**: F5-TTS (flow matching) với fine-tune Vietnamese `hynt/F5-TTS-Vietnamese-ViVoice`
+- **TTS** (default = VieNeu, fallback = F5):
+  - **VieNeu-TTS** `pnnbao-ump/VieNeu-TTS-v2` — Qwen2-based 0.6B LLM-style speech model, Apache 2.0, voice clone 3-5s
+    - GPU mode (default): backend **LMDeploy TurboMind** — plugin tự spawn local API server, connect qua remote client (max throughput nhờ FlashAttn + paged KV cache + tensor parallel)
+    - CPU mode: GGUF + ONNX
+  - **F5-TTS** `hynt/F5-TTS-Vietnamese-ViVoice` — Flow-matching diffusion, CC-BY-NC-SA (non-commercial), GPU-only
 - **LLM**: OpenAI-compatible API (GPT-4o / Ollama / vLLM / Vast.AI vLLM)
 - **Platform**: TikTokLive (websocket scraping)
 - **Output**: aiortc (WebRTC), python_rtmpstream (RTMP), pyvirtualcam

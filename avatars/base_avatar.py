@@ -100,15 +100,17 @@ class BaseAvatar:
         self.res_frame_queue = Queue(self.batch_size*2)
         self.render_event = Event()
 
-        # Chỉ dùng F5-TTS Vietnamese (voice cloning SOTA cho livestream bán hàng)
+        # TTS plugin: 2 lựa chọn — VieNeu-TTS (default, realtime CPU, Apache 2.0)
+        # hoặc F5-TTS (chất lượng cảm xúc cao hơn, GPU-only, CC-BY-NC-SA = non-commercial)
         _tts_modules = {
+            'vieneu': 'tts.vieneu',
             'f5tts': 'tts.f5tts',
         }
 
-        tts_name = getattr(opt, 'tts', 'f5tts')
+        tts_name = getattr(opt, 'tts', 'vieneu')
         if tts_name not in _tts_modules:
-            logger.warning(f"TTS '{tts_name}' không được hỗ trợ; fallback sang f5tts.")
-            tts_name = 'f5tts'
+            logger.warning(f"TTS '{tts_name}' không được hỗ trợ; fallback sang vieneu.")
+            tts_name = 'vieneu'
         importlib.import_module(_tts_modules[tts_name])
         self.tts = registry.create("tts", tts_name, opt=opt, parent=self)
 

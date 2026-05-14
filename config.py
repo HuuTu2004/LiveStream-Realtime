@@ -48,17 +48,42 @@ def parse_args():
     parser.add_argument('--customvideo_config', type=str, default='',
                         help="custom action json")
 
-    # ─── TTS (chỉ F5-TTS Vietnamese — voice cloning SOTA cho livestream) ──
-    parser.add_argument('--tts', type=str, default='f5tts',
-                        help="tts plugin: f5tts (Vietnamese voice cloning)")
+    # ─── TTS engine ────────────────────────────────────────────────────
+    # `vieneu` (default) — Apache 2.0, realtime CPU, voice clone 3-5s ref
+    # `f5tts`            — chất lượng cao hơn nhưng CC-BY-NC-SA (chỉ research)
+    parser.add_argument('--tts', type=str, default='vieneu',
+                        help="tts plugin: vieneu | f5tts")
 
     # Legacy refs (giữ để compat với code đọc opt.REF_FILE)
     parser.add_argument('--REF_FILE', type=str, default='',
-                        help="(legacy) reference audio — F5-TTS dùng --f5_ref_audio")
+                        help="(legacy) reference audio")
     parser.add_argument('--REF_TEXT', type=str, default='',
-                        help="(legacy) reference transcript — F5-TTS dùng --f5_ref_text")
+                        help="(legacy) reference transcript")
 
-    # ─── F5-TTS Vietnamese ─────────────────────────────────────────────
+    # ─── VieNeu-TTS (Vietnamese, realtime, Apache 2.0) ─────────────────
+    parser.add_argument('--vieneu_mode', type=str, default='gpu',
+                        choices=['gpu', 'standard', 'turbo', 'remote'],
+                        help="VieNeu mode: gpu (DEFAULT — tự spawn lmdeploy local, max GPU perf) | "
+                             "standard (GGUF+ONNX local) | turbo (0.3B 2x faster) | remote (external lmdeploy)")
+    parser.add_argument('--vieneu_emotion', type=str, default='natural',
+                        choices=['natural', 'storytelling'],
+                        help="VieNeu emotion preset")
+    parser.add_argument('--vieneu_voice_id', type=str, default='',
+                        help="Preset voice ID. Để trống = dùng ref_audio")
+    parser.add_argument('--vieneu_ref_audio', type=str, default='',
+                        help="VieNeu reference WAV (3-5s) cho voice cloning")
+    parser.add_argument('--vieneu_ref_text', type=str, default='',
+                        help="Transcript của vieneu_ref_audio")
+    parser.add_argument('--vieneu_api_base', type=str, default='',
+                        help="(remote mode) URL lmdeploy server đã chạy sẵn. Để trống với gpu mode = auto-spawn local")
+    parser.add_argument('--vieneu_model_name', type=str, default='pnnbao-ump/VieNeu-TTS-v2',
+                        help="HF repo (gpu/remote mode)")
+    parser.add_argument('--vieneu_port', type=int, default=23333,
+                        help="(gpu mode) Local port cho lmdeploy api_server")
+    parser.add_argument('--vieneu_tp', type=int, default=1,
+                        help="(gpu mode) Tensor parallel size (1 GPU = 1; 2 GPU = 2)")
+
+    # ─── F5-TTS Vietnamese (alternative, non-commercial only) ──────────
     parser.add_argument('--f5_ref_audio', type=str, default='',
                         help="F5-TTS reference WAV (5-15s) cho voice cloning")
     parser.add_argument('--f5_ref_text', type=str, default='',

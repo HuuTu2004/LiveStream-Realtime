@@ -16,7 +16,13 @@ httpx>=0.27.0
 # ─── TikTok Live scraper (comment/like/join/gift) ────────────────────
 TikTokLive>=6.0.0
 
-# ─── F5-TTS Vietnamese (voice cloning, SOTA 2024) ────────────────────
+# ─── TTS engines (Vietnamese, voice cloning) ────────────────────────
+# VieNeu-TTS — default, Apache 2.0, voice clone 3-5s
+vieneu>=1.1.0
+# LMDeploy — TurboMind GPU backend cho VieNeu mode=gpu (FlashAttn, paged KV cache, TP)
+# Cài kèm `[all]` để có cả TurboMind + PyTorch engine + OpenAI-compat API server.
+lmdeploy[all]>=0.6.0
+# F5-TTS — alternative, chất lượng cao hơn nhưng CC-BY-NC-SA (non-commercial)
 f5-tts>=0.6.0
 vocos>=0.1.0
 
