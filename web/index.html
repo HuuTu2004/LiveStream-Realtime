@@ -324,21 +324,23 @@
         </div>
 
         <div class="card">
-          <h3>2. Test TTS (echo)</h3>
+          <h3>2. Test TTS (echo — gửi thẳng text cho avatar nói)</h3>
+          <p class="hint">Bypass brain/LLM — avatar đọc text này ngay lập tức qua TTS. Dùng để test pipeline.</p>
           <form id="tts-test-form">
-            <label>Text (có thể chèn [wave], [point]...)
-              <textarea name="text" rows="3" required>[wave] Dạ xin chào cả nhà, em là Linh đây nè!</textarea>
+            <label>Text (có thể chèn gesture: [wave], [point], [smile]...)
+              <textarea name="text" rows="3" required>[wave] Dạ xin chào cả nhà, em là Linh đây nè! Hôm nay shop có rất nhiều ưu đãi hấp dẫn cho các bạn.</textarea>
             </label>
             <div class="btn-row">
-              <button type="submit">Đọc thử</button>
-              <button type="button" id="tts-stop" class="btn-secondary">Dừng</button>
+              <button type="submit">▶ Đọc thử</button>
+              <button type="button" id="tts-stop" class="btn-secondary">■ Dừng</button>
             </div>
           </form>
           <div id="tts-status" class="status"></div>
         </div>
 
         <div class="card">
-          <h3>3. Cấu hình F5-TTS</h3>
+          <h3>3. Cấu hình VieNeu-TTS</h3>
+          <p class="hint">Mode hiện tại trong server log. <code>turbo</code> = nhanh nhất, <code>standard</code> = chất lượng cao hơn.</p>
           <form data-config-form data-group="tts"></form>
         </div>
       </section>
