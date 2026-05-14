@@ -92,6 +92,36 @@ class RTMPOutput(BaseOutput):
         except Exception as e:
             logger.debug(f"[RTMP] F_SETPIPE_SZ failed: {e}")
 
+        # Detect NVENC availability (NVIDIA GPU encoder — chip riêng, không
+        # đụng CUDA cores). Default ON nếu có nvidia-smi; fallback libx264 CPU.
+        import shutil as _shutil
+        use_nvenc = _shutil.which('nvidia-smi') is not None and \
+                    os.environ.get('RTMP_ENCODER', 'auto').lower() != 'cpu'
+        if use_nvenc:
+            video_codec = [
+                '-c:v', 'h264_nvenc',
+                '-preset', 'p1',           # p1=fastest, p7=slowest+best
+                '-tune', 'll',             # low-latency
+                '-rc', 'cbr',
+                '-b:v', str(self.bitrate),
+                '-maxrate', str(self.bitrate),
+                '-bufsize', str(self.bitrate),
+                '-zerolatency', '1',
+                '-pix_fmt', 'yuv420p',
+                '-g', str(self.fps * 2),
+            ]
+            encoder_name = 'h264_nvenc (GPU)'
+        else:
+            video_codec = [
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',
+                '-tune', 'zerolatency',
+                '-pix_fmt', 'yuv420p',
+                '-b:v', str(self.bitrate),
+                '-g', str(self.fps * 2),
+            ]
+            encoder_name = 'libx264 (CPU)'
+
         cmd = [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'info',
             '-fflags', '+nobuffer',
@@ -108,18 +138,14 @@ class RTMPOutput(BaseOutput):
             '-ac', '1',
             '-thread_queue_size', '1024',
             '-i', f'pipe:{a_r}',
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-tune', 'zerolatency',
-            '-pix_fmt', 'yuv420p',
-            '-b:v', str(self.bitrate),
-            '-g', str(self.fps * 2),
+            *video_codec,
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
             '-f', 'flv',
             self.push_url,
         ]
+        logger.info(f"[RTMP] encoder = {encoder_name}")
 
         logger.info(f"[RTMP] spawning ffmpeg → {self.push_url} ({w}x{h} @ {self.fps}fps)")
         self._proc = subprocess.Popen(
