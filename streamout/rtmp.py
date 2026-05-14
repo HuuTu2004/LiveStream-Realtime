@@ -1,14 +1,34 @@
 ###############################################################################
-#  Output — RTMP 推流输出
+#  RTMP output — push avatar stream qua ffmpeg subprocess
+#
+#  Trước đây dùng `python_rtmpstream` (C++ pybind11 build từ source) — phức tạp,
+#  yêu cầu libavcodec-dev + cmake + version FFmpeg đúng. Refactor sang ffmpeg
+#  CLI subprocess (chỉ cần `apt install ffmpeg`).
+#
+#  Architecture:
+#    Python                                  ffmpeg subprocess
+#    ------                                  -----------------
+#    push_video_frame() → write to pipe ──▶ -i pipe:N (rgb24 rawvideo)
+#    push_audio_frame() → write to pipe ──▶ -i pipe:M (f32le PCM mono)
+#                                            ↓
+#                                            libx264 + aac → flv → RTMP server
+#
+#  Sử dụng `pass_fds` để pass UNIX pipe file descriptors cho ffmpeg.
 ###############################################################################
 
+import os
 import subprocess
+import threading
 import time
+import queue
+from typing import TYPE_CHECKING, Optional
+
+import cv2
 import numpy as np
+
 from streamout.base_output import BaseOutput
 from registry import register
 from utils.logger import logger
-from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from avatars.base_avatar import BaseAvatar
@@ -16,101 +36,192 @@ if TYPE_CHECKING:
 
 @register("streamout", "rtmp")
 class RTMPOutput(BaseOutput):
-    """RTMP 推流输出模式 — 基于 python_rtmpstream 库推送音视频"""
+    """RTMP push qua ffmpeg subprocess (no C++ extension build needed)."""
 
     def __init__(self, opt=None, parent: Optional['BaseAvatar'] = None, **kwargs):
         super().__init__(opt, parent)
         self.push_url = getattr(opt, 'push_url', 'rtmp://localhost/live/livestream')
+        self.fps = getattr(opt, 'fps', 25)
+        self.bitrate = getattr(opt, 'bitrate', 2_000_000)  # 2 Mbps mặc định
+        self.sample_rate = getattr(opt, 'sample_rate', 16000)
+        if parent and hasattr(parent, 'sample_rate'):
+            self.sample_rate = parent.sample_rate
+
+        self._proc: Optional[subprocess.Popen] = None
+        self._video_fd_w: Optional[int] = None
+        self._audio_fd_w: Optional[int] = None
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
         self.width = getattr(opt, 'W', 450)
         self.height = getattr(opt, 'H', 450)
-        self.fps = getattr(opt, 'fps', 25)
-        self.bitrate = getattr(opt, 'bitrate', 1000000)
-        self._streamer = None
 
-        #统计视频帧率用
+        # FPS stats
         self.framecount = 0
         self.lasttime = time.perf_counter()
-        self.totaltime = 0
+        self.totaltime = 0.0
 
+    # ------------------------------------------------------------------
     def start(self) -> None:
-        """Streamer 延迟到第一帧视频到达时再根据实际宽高初始化"""
-        import queue
-        self._audio_queue = queue.Queue()
+        """Streamer khởi tạo lazily khi frame đầu tiên đến — biết width/height."""
+        self._audio_queue: queue.Queue = queue.Queue()
         self._quit_event = False
 
-    def _init_streamer(self, frame_height, frame_width):
-        try:
-            from rtmp_streaming import StreamerConfig, Streamer
-        except ImportError:
-            logger.error("rtmp_streaming is not installed. Please install python_rtmpstream.")
-            raise
+    def _spawn_ffmpeg(self, h: int, w: int) -> None:
+        # Tạo 2 OS pipes — video + audio
+        v_r, v_w = os.pipe()
+        a_r, a_w = os.pipe()
 
-        sc = StreamerConfig()
-        sc.source_width = frame_width
-        sc.source_height = frame_height
-        sc.stream_width = frame_width
-        sc.stream_height = frame_height
-        sc.stream_fps = self.fps
-        sc.stream_bitrate = self.bitrate
-        sc.stream_profile = 'main'
-        sc.audio_channel = 1
-        
-        sc.sample_rate = getattr(self.opt, 'sample_rate', 16000)
-        if self.parent:
-            sc.sample_rate = self.parent.sample_rate
-            
-        sc.stream_server = self.push_url
+        cmd = [
+            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'warning',
+            # Video input (rgb24 raw, được Python feed qua v_r)
+            '-f', 'rawvideo',
+            '-pix_fmt', 'rgb24',
+            '-s', f'{w}x{h}',
+            '-r', str(self.fps),
+            '-i', f'pipe:{v_r}',
+            # Audio input (float32 little-endian mono, từ a_r)
+            '-f', 'f32le',
+            '-ar', str(self.sample_rate),
+            '-ac', '1',
+            '-i', f'pipe:{a_r}',
+            # Video encode: x264 zerolatency cho real-time
+            '-c:v', 'libx264',
+            '-preset', 'veryfast',
+            '-tune', 'zerolatency',
+            '-pix_fmt', 'yuv420p',
+            '-b:v', str(self.bitrate),
+            '-maxrate', str(self.bitrate),
+            '-bufsize', str(self.bitrate),
+            '-g', str(self.fps * 2),  # keyframe mỗi 2s
+            # Audio encode: AAC 128kbps, resample 44.1kHz (RTMP/FLV standard)
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-ar', '44100',
+            # Output FLV qua RTMP
+            '-f', 'flv',
+            self.push_url,
+        ]
 
-        self._streamer = Streamer()
-        self._streamer.init(sc)
+        logger.info(f"[RTMP] spawning ffmpeg → {self.push_url} ({w}x{h} @ {self.fps}fps, audio {self.sample_rate}Hz)")
+        self._proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            pass_fds=(v_r, a_r),
+        )
+        # Parent đóng read-ends (ffmpeg child đã inherit)
+        os.close(v_r)
+        os.close(a_r)
+        self._video_fd_w = v_w
+        self._audio_fd_w = a_w
 
-        self._starttime=time.perf_counter()
-        self._totalframe=0
-        logger.info(f"RTMP output started via python_rtmpstream: {self.push_url} with resolution {frame_width}x{frame_height}")
+        # Stderr reader thread — forward ffmpeg log
+        self._stderr_thread = threading.Thread(target=self._pipe_stderr, daemon=True)
+        self._stderr_thread.start()
 
+        self._starttime = time.perf_counter()
+        self._totalframe = 0
+
+    def _pipe_stderr(self) -> None:
+        if not self._proc or not self._proc.stderr:
+            return
+        for raw in self._proc.stderr:
+            try:
+                line = raw.decode('utf-8', errors='replace').rstrip()
+            except Exception:
+                continue
+            if not line:
+                continue
+            # Lọc info noise của ffmpeg
+            if 'error' in line.lower() or 'failed' in line.lower():
+                logger.error(f"[ffmpeg] {line}")
+            else:
+                logger.debug(f"[ffmpeg] {line}")
+
+    # ------------------------------------------------------------------
     def push_video_frame(self, frame) -> None:
-        if isinstance(frame, np.ndarray):
-            if self._streamer is None:
+        if not isinstance(frame, np.ndarray):
+            return
+        with self._lock:
+            if self._proc is None:
+                # Lazy init dựa trên kích thước frame đầu tiên
                 self.height, self.width = frame.shape[:2]
-                self._init_streamer(self.height, self.width)
-                
-                # Consume any buffered audio that arrived before the first video frame
+                self._spawn_ffmpeg(self.height, self.width)
+                # Flush audio đã buffer trước khi video đầu tới
                 while not self._audio_queue.empty():
-                    buffered_audio = self._audio_queue.get()
-                    self._streamer.stream_frame_audio(buffered_audio)
-                    
-            import cv2
-            # Convert BGR (OpenCV) to RGB since Streamer expects RGB memory layout
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self._streamer.stream_frame(rgb_frame)
+                    buf = self._audio_queue.get()
+                    try:
+                        os.write(self._audio_fd_w, buf.tobytes())
+                    except OSError:
+                        break
 
-            delay = self._starttime+self._totalframe*0.04-time.perf_counter() #40ms
-            if delay > 0:
-                time.sleep(delay)
-            self._totalframe += 1
+            # Pipeline upstream dùng BGR (OpenCV), ffmpeg input là RGB
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            try:
+                os.write(self._video_fd_w, rgb.tobytes())
+            except BrokenPipeError:
+                logger.error("[RTMP] ffmpeg pipe broken — subprocess died")
+                self._cleanup_proc()
+                return
 
-            self.totaltime += (time.perf_counter() - self.lasttime)
-            self.framecount += 1
-            self.lasttime = time.perf_counter()
-            if self.framecount==100:
-                logger.info(f"------actual avg final fps:{self.framecount/self.totaltime:.4f}")
-                self.framecount = 0
-                self.totaltime=0
+        # Frame pacing — giữ đúng fps
+        delay = self._starttime + self._totalframe / self.fps - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+        self._totalframe += 1
+
+        # FPS stats log mỗi 100 frame
+        self.totaltime += (time.perf_counter() - self.lasttime)
+        self.framecount += 1
+        self.lasttime = time.perf_counter()
+        if self.framecount == 100:
+            logger.info(f"[RTMP] actual avg fps = {self.framecount/self.totaltime:.2f}")
+            self.framecount = 0
+            self.totaltime = 0.0
 
     def push_audio_frame(self, frame, eventpoint=None) -> None:
-        if isinstance(frame, np.ndarray):
-            # The upstream pipeline typically passes np.int16 (after multiplying by 32767).
-            # The python_rtmpstream bindings expect np.float32 for AV_SAMPLE_FMT_FLTP.
-            if frame.dtype == np.int16:
-                frame = frame.astype(np.float32) / 32767.0
-            
-            if self._streamer:
-                self._streamer.stream_frame_audio(frame)
-                self.parent.notify(eventpoint)
-            else:
-                self._audio_queue.put(frame)
+        if not isinstance(frame, np.ndarray):
+            return
+        # Upstream emit int16; ffmpeg f32le cần float32 [-1, 1]
+        if frame.dtype == np.int16:
+            frame = frame.astype(np.float32) / 32767.0
+        elif frame.dtype != np.float32:
+            frame = frame.astype(np.float32)
+
+        if self._proc is None:
+            # Video chưa khởi → buffer audio cho tới khi frame đầu tới
+            self._audio_queue.put(frame)
+            return
+
+        try:
+            os.write(self._audio_fd_w, frame.tobytes())
+        except BrokenPipeError:
+            return
+
+        if self.parent and eventpoint:
+            self.parent.notify(eventpoint)
+
+    # ------------------------------------------------------------------
+    def _cleanup_proc(self) -> None:
+        if self._video_fd_w is not None:
+            try: os.close(self._video_fd_w)
+            except OSError: pass
+            self._video_fd_w = None
+        if self._audio_fd_w is not None:
+            try: os.close(self._audio_fd_w)
+            except OSError: pass
+            self._audio_fd_w = None
+        if self._proc:
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            self._proc = None
 
     def stop(self) -> None:
         self._quit_event = True
-        self._streamer = None
-        logger.info("RTMP output stopped")
+        with self._lock:
+            self._cleanup_proc()
+        logger.info("[RTMP] output stopped")
