@@ -15,18 +15,10 @@
 #  limitations under the License.
 ###############################################################################
 
-# server.py
-from flask import Flask, render_template,send_from_directory,request, jsonify
-from flask_sockets import Sockets
-import base64
+# server.py — aiohttp + aiortc (Flask legacy đã loại bỏ)
 import json
-#import gevent
-#from gevent import pywsgi
-#from geventwebsocket.handler import WebSocketHandler
-import re
 import numpy as np
-from threading import Thread,Event
-#import multiprocessing
+from threading import Thread, Event
 import torch.multiprocessing as mp
 
 from aiohttp import web
@@ -39,23 +31,15 @@ from avatars.base_avatar import BaseAvatar
 import registry
 from server.routes import setup_routes
 from server.rtc_manager import RTCManager
-from server.session_manager import session_manager
-# NOTE: legacy llm.py đã bị xóa — /human chat hiện dùng brain.llm_client (xem server/routes.py)
-
-import argparse
+from server.session_manager import session_manager 
 import random
-import shutil
 import asyncio
 import torch
-from io import BytesIO
 from typing import Dict
 from utils.logger import logger
 import copy
-import gc
 
 
-app = Flask(__name__)
-#sockets = Sockets(app)
 opt = None
 model = None
 global_avatars = {} # avatar_id: payload
