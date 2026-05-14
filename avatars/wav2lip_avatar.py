@@ -50,11 +50,15 @@ device = initialize_device()
 logger.info('Using {} for inference.'.format(device))
 
 def _load(checkpoint_path):
+    # weights_only=False: wav2lip.pth từ release chính thức (trusted) và chứa
+    # cả optimizer state. PyTorch >= 2.6 đổi default sang True sẽ raise
+    # UnpicklingError trên Blackwell / torch 2.7+.
     if device == 'cuda':
-        checkpoint = torch.load(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path, weights_only=False)
     else:
         checkpoint = torch.load(checkpoint_path,
-                                map_location=lambda storage, loc: storage)
+                                map_location=lambda storage, loc: storage,
+                                weights_only=False)
     return checkpoint
 
 def load_model(path):

@@ -77,7 +77,9 @@ def load_avatar(avatar_id):
     mask_coords_path =f"{avatar_path}/mask_coords.pkl"
     avatar_info_path = f"{avatar_path}/avator_info.json"
 
-    input_latent_list_cycle = torch.load(latents_out_path)
+    # weights_only=False: latents.pt là list[Tensor] đã prepare từ pre-process,
+    # torch >= 2.6 default weights_only=True sẽ reject list pickled object.
+    input_latent_list_cycle = torch.load(latents_out_path, weights_only=False)
     with open(coords_path, 'rb') as f:
         coord_list_cycle = pickle.load(f)
     frame_list_cycle = None

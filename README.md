@@ -45,6 +45,31 @@ Ensure you have Python 3.10 and CUDA installed.
 pip install -r requirements.txt
 ```
 
+### 1b. Setup cho RTX 50x (Blackwell / sm_120)
+
+RTX 5090 / 5080 / 5070 cần **PyTorch ≥ 2.7 + CUDA 12.8**. PyTorch ≤ 2.6 / cu121 sẽ chạy nhưng raise `CUDA error: no kernel image is available` ngay lần inference đầu tiên.
+
+```powershell
+# Một lệnh cho mọi 50x SKU (driver >= 570 phải có sẵn)
+powershell -ExecutionPolicy Bypass -File .\setup_5090.ps1
+```
+
+Hoặc làm thủ công sau khi đã `pip install -r requirements.txt`:
+
+```powershell
+pip install --upgrade --force-reinstall `
+    torch torchvision torchaudio `
+    --index-url https://download.pytorch.org/whl/cu128
+pip install --upgrade "onnxruntime-gpu>=1.20.0"
+```
+
+Kiểm tra nhanh:
+
+```powershell
+python -c "import torch; print(torch.cuda.get_device_name(0), torch.cuda.get_arch_list())"
+# Phải thấy 'sm_120' trong arch_list nếu cài đúng torch cu128.
+```
+
 ### 2. Download Models
 - **Wav2Lip:** Place `wav2lip.pth` in the `models/` directory.
 - **Avatars:** Place your avatar folders in `data/avatars/`.

@@ -44,7 +44,8 @@ def parse_args():
 
     # ─── TTS ───────────────────────────────────────────────────────────
     parser.add_argument('--tts', type=str, default='edgetts',
-                        help="tts plugin: edgetts/gpt-sovits/cosyvoice/fishtts/tencent/doubao/indextts2/azuretts/qwentts")
+                        help="tts plugin: edgetts/gpt-sovits/cosyvoice/fishtts/tencent/doubao/indextts2/azuretts/qwentts/vienuetts")
+
     parser.add_argument('--REF_FILE', type=str, default="zh-CN-YunxiaNeural",
                         help="参考文件名或语音模型ID")
     parser.add_argument('--REF_TEXT', type=str, default=None)
@@ -58,6 +59,13 @@ def parse_args():
     parser.add_argument('--max_session', type=int, default=1)
     parser.add_argument('--listenport', type=int, default=8010,
                         help="web listen port")
+
+    # ─── LLM ───────────────────────────────────────────────────────────
+    parser.add_argument('--llm_url', type=str, default='http://localhost:11434/v1',
+                        help="LLM API server URL (Ollama/vLLM/Vast.ai)")
+    parser.add_argument('--llm_model', type=str, default='qwen2.5:7b',
+                        help="LLM model name")
+
 
     opt = parser.parse_args()
 

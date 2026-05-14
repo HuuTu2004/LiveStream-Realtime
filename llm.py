@@ -9,23 +9,20 @@ def llm_response(message,avatar_session:'BaseAvatar',datainfo:dict={}):
     try:
         opt = avatar_session.opt
         start = time.perf_counter()
+        # Use configured LLM from CLI arguments
         from openai import OpenAI
         client = OpenAI(
-            # 如果您没有配置环境变量，请在此处用您的API Key进行替换
-            api_key=os.getenv("DASHSCOPE_API_KEY"),
-            # 填写DashScope SDK的base_url
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="none", # Most local/remote providers don't need a key
+            base_url=opt.llm_url,
         )
-        end = time.perf_counter()
-        logger.info(f"llm Time init: {end-start}s,{message}")
+        
         completion = client.chat.completions.create(
-            model="qwen-plus",
-            messages=[{'role': 'system', 'content': '你是一个知识助手，尽量以简短、口语化的方式输出'},
+            model=opt.llm_model,
+            messages=[{'role': 'system', 'content': 'Bạn là một trợ lý bán hàng livestream chuyên nghiệp. Hãy trả lời câu hỏi của khách hàng thật ngắn gọn, lôi cuốn và tự nhiên bằng tiếng Việt.'},
                     {'role': 'user', 'content': message}],
             stream=True,
-            # 通过以下设置，在流式输出的最后一行展示token使用信息
-            stream_options={"include_usage": True}
         )
+
         result=""
         first = True
         for chunk in completion:

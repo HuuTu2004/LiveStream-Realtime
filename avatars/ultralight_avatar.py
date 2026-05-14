@@ -68,7 +68,9 @@ def load_avatar(avatar_id):
     coords_path = f"{avatar_path}/coords.pkl" 
     
     model = Model(6, 'hubert').to(device)
-    model.load_state_dict(torch.load(f"{avatar_path}/ultralight.pth"))
+    # weights_only=False: ultralight.pth là full checkpoint, torch >= 2.6 mặc
+    # định True sẽ fail load trên Blackwell / torch 2.7+.
+    model.load_state_dict(torch.load(f"{avatar_path}/ultralight.pth", weights_only=False))
     
     with open(coords_path, 'rb') as f:
         coord_list_cycle = pickle.load(f)

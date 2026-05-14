@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 # Python
 __pycache__/
 *.py[cod]
@@ -11,6 +12,30 @@ downloads/
 eggs/
 .eggs/
 lib/
+=======
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Cấu trúc dự án
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Môi trường ảo (Virtual Environments)
+venv/
+venv_talking/
+.venv/
+env/
+ENV/
+bin/
+lib/
+develop-eggs/
+dist/
+eggs/
+>>>>>>> Stashed changes
 lib64/
 parts/
 sdist/
@@ -20,6 +45,7 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+<<<<<<< Updated upstream
 MANIFEST
 
 # Virtual Environments
@@ -62,3 +88,34 @@ workspace/log_ngp.txt
 *.bin
 *.weights
 *.ckpt
+=======
+
+# Dữ liệu Models (Cực nặng, không nên đưa lên Git)
+models/*
+!models/.gitkeep
+*.pth
+*.pt
+*.pb
+*.pbmm
+*.onnx
+*.gguf
+
+# Dữ liệu Avatars & Records
+data/avatars/*
+!data/avatars/.gitkeep
+data/record.mp4
+temp*.mp4
+temp*.aac
+*.log
+webui.log
+vieneu_server.log
+llm_server.log
+
+# Hệ điều hành
+.DS_Store
+Thumbs.db
+
+# Private config
+config.json
+*.env
+>>>>>>> Stashed changes
