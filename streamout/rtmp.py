@@ -165,9 +165,11 @@ class RTMPOutput(BaseOutput):
                 continue
             if not line:
                 continue
-            # Lọc info noise của ffmpeg
-            if 'error' in line.lower() or 'failed' in line.lower():
+            low = line.lower()
+            if 'error' in low or 'failed' in low or 'broken' in low or 'closed' in low:
                 logger.error(f"[ffmpeg] {line}")
+            elif any(k in low for k in ('warning', 'connection', 'rtmp', 'input #', 'stream #', 'output #', 'press [q]', 'fps=')):
+                logger.info(f"[ffmpeg] {line}")
             else:
                 logger.debug(f"[ffmpeg] {line}")
 
