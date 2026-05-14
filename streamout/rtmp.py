@@ -6,14 +6,22 @@
 #  CLI subprocess (chỉ cần `apt install ffmpeg`).
 #
 #  Architecture:
-#    Python                                  ffmpeg subprocess
-#    ------                                  -----------------
-#    push_video_frame() → write to pipe ──▶ -i pipe:N (rgb24 rawvideo)
-#    push_audio_frame() → write to pipe ──▶ -i pipe:M (f32le PCM mono)
-#                                            ↓
-#                                            libx264 + aac → flv → RTMP server
+#    Python main thread          ffmpeg subprocess
+#    ------------------          -----------------
+#    push_video_frame() ──▶ video pipe ──▶ -i pipe:N (rgb24 rawvideo)
+#                                          ↓
+#    push_audio_frame() ──▶ audio queue    ↓
+#                          ↓               ↓
+#    audio writer thread ──▶ audio pipe ──▶ -i pipe:M (f32le PCM mono)
+#    (constant 40ms tick — pop queue or silence)
+#                                          ↓ libx264 + aac → flv → RTMP
 #
-#  Sử dụng `pass_fds` để pass UNIX pipe file descriptors cho ffmpeg.
+#  Lý do tách audio thread:
+#    ffmpeg với 2 raw inputs cần CẢ 2 stream tiến đều. Nếu Python pump video
+#    trong loop chính và pad silence in-line cho audio, video write (1.3MB)
+#    chặn pipe khi ffmpeg buffer đầy → audio không được pump → ffmpeg stall
+#    → deadlock. Audio thread chạy độc lập, tick 40ms (= 1 video frame), pop
+#    real audio từ queue (nếu có) hoặc đẩy silence. Không bao giờ stall.
 ###############################################################################
 
 import os
@@ -36,13 +44,13 @@ if TYPE_CHECKING:
 
 @register("streamout", "rtmp")
 class RTMPOutput(BaseOutput):
-    """RTMP push qua ffmpeg subprocess (no C++ extension build needed)."""
+    """RTMP push qua ffmpeg subprocess + audio thread tránh deadlock."""
 
     def __init__(self, opt=None, parent: Optional['BaseAvatar'] = None, **kwargs):
         super().__init__(opt, parent)
         self.push_url = getattr(opt, 'push_url', 'rtmp://localhost/live/livestream')
         self.fps = getattr(opt, 'fps', 25)
-        self.bitrate = getattr(opt, 'bitrate', 2_000_000)  # 2 Mbps mặc định
+        self.bitrate = getattr(opt, 'bitrate', 2_000_000)
         self.sample_rate = getattr(opt, 'sample_rate', 16000)
         if parent and hasattr(parent, 'sample_rate'):
             self.sample_rate = parent.sample_rate
@@ -51,14 +59,14 @@ class RTMPOutput(BaseOutput):
         self._video_fd_w: Optional[int] = None
         self._audio_fd_w: Optional[int] = None
         self._stderr_thread: Optional[threading.Thread] = None
-        self._lock = threading.Lock()
+        self._audio_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
 
         self.width = getattr(opt, 'W', 450)
         self.height = getattr(opt, 'H', 450)
 
-        # Audio/video sync — đếm để pad silence khi avatar idle
-        self._video_frame_count = 0
-        self._audio_samples_written = 0
+        # Mỗi audio chunk = 1 video frame tương đương = sample_rate / fps samples
+        self._chunk_samples = self.sample_rate // self.fps
 
         # FPS stats
         self.framecount = 0
@@ -69,17 +77,16 @@ class RTMPOutput(BaseOutput):
     def start(self) -> None:
         """Streamer khởi tạo lazily khi frame đầu tiên đến — biết width/height."""
         self._audio_queue: queue.Queue = queue.Queue()
-        self._quit_event = False
+        self._stop_event.clear()
 
     def _spawn_ffmpeg(self, h: int, w: int) -> None:
-        # Tạo 2 OS pipes — video + audio
         v_r, v_w = os.pipe()
         a_r, a_w = os.pipe()
 
-        # Tăng pipe buffer lên 1MB để tránh block trên video frame lớn
+        # Tăng pipe buffer lên 1MB (Linux only) để tránh block frame lớn
         try:
             import fcntl
-            F_SETPIPE_SZ = 1031  # Linux F_SETPIPE_SZ
+            F_SETPIPE_SZ = 1031
             fcntl.fcntl(v_w, F_SETPIPE_SZ, 1024 * 1024)
             fcntl.fcntl(a_w, F_SETPIPE_SZ, 1024 * 1024)
         except Exception as e:
@@ -87,44 +94,34 @@ class RTMPOutput(BaseOutput):
 
         cmd = [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'info',
-            # Low-latency flags + skip metadata probe để start nhanh
-            '-fflags', '+nobuffer+flush_packets',
-            '-flags', 'low_delay',
+            '-fflags', '+nobuffer',
             '-probesize', '32',
             '-analyzeduration', '0',
-            # Video input (rgb24 raw, được Python feed qua v_r)
             '-f', 'rawvideo',
             '-pix_fmt', 'rgb24',
             '-s', f'{w}x{h}',
             '-r', str(self.fps),
             '-thread_queue_size', '1024',
             '-i', f'pipe:{v_r}',
-            # Audio input (float32 little-endian mono, từ a_r)
             '-f', 'f32le',
             '-ar', str(self.sample_rate),
             '-ac', '1',
             '-thread_queue_size', '1024',
             '-i', f'pipe:{a_r}',
-            # Video encode: x264 zerolatency cho real-time
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-tune', 'zerolatency',
             '-pix_fmt', 'yuv420p',
             '-b:v', str(self.bitrate),
-            '-maxrate', str(self.bitrate),
-            '-bufsize', str(self.bitrate),
-            '-g', str(self.fps * 2),  # keyframe mỗi 2s
-            # Audio encode: AAC 128kbps, resample 44.1kHz (RTMP/FLV standard)
+            '-g', str(self.fps * 2),
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
-            '-flush_packets', '1',
-            # Output FLV qua RTMP
             '-f', 'flv',
             self.push_url,
         ]
 
-        logger.info(f"[RTMP] spawning ffmpeg → {self.push_url} ({w}x{h} @ {self.fps}fps, audio {self.sample_rate}Hz)")
+        logger.info(f"[RTMP] spawning ffmpeg → {self.push_url} ({w}x{h} @ {self.fps}fps)")
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -132,25 +129,18 @@ class RTMPOutput(BaseOutput):
             stderr=subprocess.PIPE,
             pass_fds=(v_r, a_r),
         )
-        # Parent đóng read-ends (ffmpeg child đã inherit)
         os.close(v_r)
         os.close(a_r)
         self._video_fd_w = v_w
         self._audio_fd_w = a_w
 
-        # Stderr reader thread — forward ffmpeg log
+        # Stderr reader thread
         self._stderr_thread = threading.Thread(target=self._pipe_stderr, daemon=True)
         self._stderr_thread.start()
 
-        # Pre-fill 0.5s silence vào audio pipe để ffmpeg probe stream nhanh
-        # (ffmpeg parse raw f32le mới open được input #1 → cần data sẵn)
-        prefill_samples = self.sample_rate // 2  # 500ms
-        prefill = np.zeros(prefill_samples, dtype=np.float32)
-        try:
-            os.write(self._audio_fd_w, prefill.tobytes())
-            self._audio_samples_written = prefill_samples
-        except OSError as e:
-            logger.warning(f"[RTMP] audio prefill failed: {e}")
+        # Audio writer thread — tick 40ms (1 video frame) liên tục
+        self._audio_thread = threading.Thread(target=self._audio_writer_loop, daemon=True)
+        self._audio_thread.start()
 
         self._starttime = time.perf_counter()
         self._totalframe = 0
@@ -166,62 +156,93 @@ class RTMPOutput(BaseOutput):
             if not line:
                 continue
             low = line.lower()
-            if 'error' in low or 'failed' in low or 'broken' in low or 'closed' in low:
+            if 'error' in low or 'failed' in low or 'broken' in low:
                 logger.error(f"[ffmpeg] {line}")
-            elif any(k in low for k in ('warning', 'connection', 'rtmp', 'input #', 'stream #', 'output #', 'press [q]', 'fps=')):
+            elif 'input #' in low or 'output #' in low or 'stream #' in low:
                 logger.info(f"[ffmpeg] {line}")
             else:
                 logger.debug(f"[ffmpeg] {line}")
+
+    def _audio_writer_loop(self) -> None:
+        """Tick 40ms liên tục — pop real audio từ queue, fallback silence.
+
+        Đảm bảo ffmpeg audio input không bao giờ stall — kể cả khi avatar idle
+        hoặc Python main thread block bởi video pipe.
+        """
+        silence_chunk = np.zeros(self._chunk_samples, dtype=np.float32).tobytes()
+        chunk_duration = self._chunk_samples / self.sample_rate
+        next_tick = time.perf_counter()
+        samples_written = 0
+        real_samples = 0
+        silence_samples = 0
+
+        while not self._stop_event.is_set():
+            try:
+                # Pop tất cả real audio đang chờ trong queue (non-blocking)
+                # Mỗi pop = 1 chunk audio đã được push_audio_frame queue
+                data = None
+                try:
+                    data = self._audio_queue.get_nowait()
+                except queue.Empty:
+                    pass
+
+                if data is not None and data.size > 0:
+                    # Real audio từ TTS — write nguyên block
+                    payload = data.tobytes()
+                    real_samples += data.size
+                else:
+                    # Idle — đẩy silence cho tick này
+                    payload = silence_chunk
+                    silence_samples += self._chunk_samples
+
+                if self._audio_fd_w is None:
+                    break
+                try:
+                    os.write(self._audio_fd_w, payload)
+                except (BrokenPipeError, OSError):
+                    logger.debug("[RTMP] audio pipe closed")
+                    break
+
+                samples_written += len(payload) // 4  # float32 = 4 bytes/sample
+            except Exception:
+                logger.exception("[RTMP] audio writer error")
+                break
+
+            next_tick += chunk_duration
+            delay = next_tick - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+            elif delay < -0.5:
+                # Falling behind > 500ms, reset clock để tránh tăng tốc bù
+                next_tick = time.perf_counter()
+
+        logger.info(f"[RTMP] audio thread exit (real={real_samples}, silence={silence_samples})")
 
     # ------------------------------------------------------------------
     def push_video_frame(self, frame) -> None:
         if not isinstance(frame, np.ndarray):
             return
-        with self._lock:
-            if self._proc is None:
-                # Lazy init dựa trên kích thước frame đầu tiên
-                self.height, self.width = frame.shape[:2]
-                self._spawn_ffmpeg(self.height, self.width)
-                # Flush audio đã buffer trước khi video đầu tới
-                while not self._audio_queue.empty():
-                    buf = self._audio_queue.get()
-                    try:
-                        os.write(self._audio_fd_w, buf.tobytes())
-                        self._audio_samples_written += len(buf)
-                    except OSError:
-                        break
+        if self._proc is None:
+            # Lazy init dựa trên kích thước frame đầu tiên
+            self.height, self.width = frame.shape[:2]
+            self._spawn_ffmpeg(self.height, self.width)
 
-            # Pipeline upstream dùng BGR (OpenCV), ffmpeg input là RGB
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            try:
-                os.write(self._video_fd_w, rgb.tobytes())
-            except BrokenPipeError:
-                logger.error("[RTMP] ffmpeg pipe broken — subprocess died")
-                self._cleanup_proc()
-                return
-            self._video_frame_count += 1
+        # Pipeline upstream dùng BGR (OpenCV) → ffmpeg input là RGB
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        try:
+            os.write(self._video_fd_w, rgb.tobytes())
+        except BrokenPipeError:
+            logger.error("[RTMP] video pipe broken — ffmpeg died")
+            self._cleanup_proc()
+            return
 
-            # Sync audio: pad silence nếu audio fell behind expected video time
-            # ffmpeg với 2 raw inputs cần cả 2 stream tiến đều — không có audio
-            # thì mux pipeline đứng. Khi avatar idle (no TTS), audio không đến →
-            # ta tự pad silence ở đây.
-            expected_samples = int(self._video_frame_count * self.sample_rate / self.fps)
-            samples_to_pad = expected_samples - self._audio_samples_written
-            if samples_to_pad > 0 and self._audio_fd_w is not None:
-                silence = np.zeros(samples_to_pad, dtype=np.float32)
-                try:
-                    os.write(self._audio_fd_w, silence.tobytes())
-                    self._audio_samples_written += samples_to_pad
-                except (BrokenPipeError, OSError):
-                    pass
-
-        # Frame pacing — giữ đúng fps
+        # Frame pacing — giữ đúng fps (tránh push nhanh hơn fps gây buffer bloat)
         delay = self._starttime + self._totalframe / self.fps - time.perf_counter()
         if delay > 0:
             time.sleep(delay)
         self._totalframe += 1
 
-        # FPS stats log mỗi 100 frame
+        # FPS stats
         self.totaltime += (time.perf_counter() - self.lasttime)
         self.framecount += 1
         self.lasttime = time.perf_counter()
@@ -233,29 +254,21 @@ class RTMPOutput(BaseOutput):
     def push_audio_frame(self, frame, eventpoint=None) -> None:
         if not isinstance(frame, np.ndarray):
             return
-        # Upstream emit int16; ffmpeg f32le cần float32 [-1, 1]
+        # Upstream emit int16 [-32767, 32767]; ffmpeg f32le cần float32 [-1, 1]
         if frame.dtype == np.int16:
             frame = frame.astype(np.float32) / 32767.0
         elif frame.dtype != np.float32:
             frame = frame.astype(np.float32)
 
-        if self._proc is None:
-            # Video chưa khởi → buffer audio cho tới khi frame đầu tới
-            self._audio_queue.put(frame)
-            return
-
-        with self._lock:
-            try:
-                os.write(self._audio_fd_w, frame.tobytes())
-                self._audio_samples_written += len(frame)
-            except BrokenPipeError:
-                return
+        # Queue cho audio thread — KHÔNG write trực tiếp (audio thread maintain rate)
+        self._audio_queue.put(frame)
 
         if self.parent and eventpoint:
             self.parent.notify(eventpoint)
 
     # ------------------------------------------------------------------
     def _cleanup_proc(self) -> None:
+        self._stop_event.set()
         if self._video_fd_w is not None:
             try: os.close(self._video_fd_w)
             except OSError: pass
@@ -272,7 +285,5 @@ class RTMPOutput(BaseOutput):
             self._proc = None
 
     def stop(self) -> None:
-        self._quit_event = True
-        with self._lock:
-            self._cleanup_proc()
+        self._cleanup_proc()
         logger.info("[RTMP] output stopped")
