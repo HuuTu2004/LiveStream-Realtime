@@ -1,5 +1,6 @@
 import logging
- 
+import os
+
 # 配置日志器
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -9,8 +10,14 @@ fhandler.setFormatter(formatter)
 fhandler.setLevel(logging.INFO)
 logger.addHandler(fhandler)
 
-# handler = logging.StreamHandler()
-# handler.setLevel(logging.DEBUG)
-# sformatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-# handler.setFormatter(sformatter)
-# logger.addHandler(handler)
+# Optional verbose logging cho debug WebRTC ICE (set DEBUG_WEBRTC=1):
+#   AIOICE/AIORTC + STUN/TURN candidate gathering, connectivity checks.
+if os.environ.get('DEBUG_WEBRTC') == '1':
+    for name in ('aioice.ice', 'aioice.turn', 'aioice.stun', 'aiortc', 'aiortc.rtcpeerconnection'):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.DEBUG)
+        h = logging.StreamHandler()
+        h.setLevel(logging.DEBUG)
+        h.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(message)s'))
+        lg.addHandler(h)
+        lg.propagate = False
