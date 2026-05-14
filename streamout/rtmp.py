@@ -202,56 +202,56 @@ class RTMPOutput(BaseOutput):
                 logger.debug(f"[ffmpeg] {line}")
 
     def _audio_writer_loop(self) -> None:
-        """Tick 40ms liên tục — pop real audio từ queue, fallback silence.
+        """Tick 40ms — drain queue, write FIXED 640 samples/tick (16kHz × 40ms).
 
-        Đảm bảo ffmpeg audio input không bao giờ stall — kể cả khi avatar idle
-        hoặc Python main thread block bởi video pipe.
+        Cần consistent rate vì ffmpeg `-ar 16000` mong 16000 samples/s wall-clock.
+        - Drain queue into buffer
+        - Write exactly self._chunk_samples per tick
+        - Pad silence nếu buffer < chunk_samples
+        - Giữ phần dư trong buffer cho tick sau (TTS push 50Hz, ta tick 25Hz → buffer up)
         """
-        silence_chunk = np.zeros(self._chunk_samples, dtype=np.float32).tobytes()
-        chunk_duration = self._chunk_samples / self.sample_rate
+        chunk_dur = self._chunk_samples / self.sample_rate
+        buf = np.empty(0, dtype=np.float32)
+        silence_pad = np.zeros(self._chunk_samples, dtype=np.float32)
         next_tick = time.perf_counter()
-        samples_written = 0
         real_samples = 0
         silence_samples = 0
 
         while not self._stop_event.is_set():
-            try:
-                # Pop tất cả real audio đang chờ trong queue (non-blocking)
-                # Mỗi pop = 1 chunk audio đã được push_audio_frame queue
-                data = None
+            # Drain queue (non-blocking) — gom đủ samples cho tick này
+            while buf.size < self._chunk_samples:
                 try:
                     data = self._audio_queue.get_nowait()
                 except queue.Empty:
-                    pass
-
-                if data is not None and data.size > 0:
-                    # Real audio từ TTS — write nguyên block
-                    payload = data.tobytes()
+                    break
+                if data.size > 0:
+                    buf = np.concatenate([buf, data])
                     real_samples += data.size
-                else:
-                    # Idle — đẩy silence cho tick này
-                    payload = silence_chunk
-                    silence_samples += self._chunk_samples
 
-                if self._audio_fd_w is None:
-                    break
-                try:
-                    os.write(self._audio_fd_w, payload)
-                except (BrokenPipeError, OSError):
-                    logger.debug("[RTMP] audio pipe closed")
-                    break
+            # Build payload — đúng chunk_samples mỗi tick
+            if buf.size >= self._chunk_samples:
+                payload = buf[:self._chunk_samples]
+                buf = buf[self._chunk_samples:]
+            else:
+                # Thiếu — pad silence để đủ
+                pad_size = self._chunk_samples - buf.size
+                payload = np.concatenate([buf, silence_pad[:pad_size]])
+                silence_samples += pad_size
+                buf = np.empty(0, dtype=np.float32)
 
-                samples_written += len(payload) // 4  # float32 = 4 bytes/sample
-            except Exception:
-                logger.exception("[RTMP] audio writer error")
+            if self._audio_fd_w is None:
+                break
+            try:
+                os.write(self._audio_fd_w, payload.tobytes())
+            except (BrokenPipeError, OSError):
+                logger.debug("[RTMP] audio pipe closed")
                 break
 
-            next_tick += chunk_duration
+            next_tick += chunk_dur
             delay = next_tick - time.perf_counter()
             if delay > 0:
                 time.sleep(delay)
             elif delay < -0.5:
-                # Falling behind > 500ms, reset clock để tránh tăng tốc bù
                 next_tick = time.perf_counter()
 
         logger.info(f"[RTMP] audio thread exit (real={real_samples}, silence={silence_samples})")
