@@ -109,17 +109,63 @@ async function fetchIceConfig() {
   }
 }
 
-$("#btn-conn").addEventListener("click", async () => {
-  const config = { sdpSemantics: "unified-plan" };
-  // Luôn fetch ICE config từ server — server đã có STUN/TURN cấu hình sẵn
-  // (Vast.ai/EC2 deployment cần TURN, local dev có thể không cần STUN).
-  // Checkbox "use-stun" giờ là fallback dùng Google STUN nếu server trả rỗng.
-  const iceServers = await fetchIceConfig();
-  if (iceServers.length > 0) {
-    config.iceServers = iceServers;
-  } else if ($("#use-stun").checked) {
-    config.iceServers = [{ urls: ["stun:stun.l.google.com:19302"] }];
+async function fetchPreviewInfo() {
+  try {
+    const r = await fetch("/preview-info", { cache: "no-store" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (_) {
+    return null;
   }
+}
+
+let _hls = null; // hls.js instance khi browser không native HLS
+
+async function connectHLS(url) {
+  const video = $("#video");
+  const label = $("#conn-label");
+  const dot = $(".status-dot", $("#video-overlay"));
+  label.textContent = "Đang tải HLS…";
+  dot.classList.add("off");
+
+  // Safari/iOS native HLS
+  if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = url;
+    video.onloadedmetadata = () => { label.textContent = `HLS (delay ~3-5s)`; dot.classList.remove("off"); };
+    video.onerror = () => { label.textContent = "HLS lỗi"; dot.classList.add("off"); };
+    try { await video.play(); } catch (e) { /* ignore autoplay block */ }
+    return;
+  }
+
+  // Chrome/Firefox/Edge: dùng hls.js (CDN load lazy)
+  if (typeof Hls === "undefined") {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/hls.js@1.5.16/dist/hls.min.js";
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  if (!Hls.isSupported()) {
+    label.textContent = "HLS không hỗ trợ browser";
+    toast("Browser không hỗ trợ HLS.js", "error"); return;
+  }
+  _hls = new Hls({ lowLatencyMode: true, liveSyncDuration: 2 });
+  _hls.loadSource(url);
+  _hls.attachMedia(video);
+  _hls.on(Hls.Events.MANIFEST_PARSED, () => {
+    label.textContent = `HLS (delay ~3-5s)`; dot.classList.remove("off");
+    video.play().catch(() => {});
+  });
+  _hls.on(Hls.Events.ERROR, (_evt, data) => {
+    if (data.fatal) { label.textContent = "HLS fail: " + data.type; dot.classList.add("off"); }
+  });
+}
+
+async function connectWebRTC() {
+  const config = { sdpSemantics: "unified-plan" };
+  const iceServers = await fetchIceConfig();
+  if (iceServers.length > 0) config.iceServers = iceServers;
   _pc = new RTCPeerConnection(config);
   _pc.addEventListener("track", (evt) => {
     if (evt.track.kind === "video") $("#video").srcObject = evt.streams[0];
@@ -129,19 +175,45 @@ $("#btn-conn").addEventListener("click", async () => {
     const s = _pc.connectionState;
     const label = $("#conn-label");
     const dot = $(".status-dot", $("#video-overlay"));
-    if (s === "connected") { label.textContent = "Đã kết nối"; dot.classList.remove("off"); }
+    if (s === "connected") { label.textContent = "WebRTC (<1s)"; dot.classList.remove("off"); }
     else if (s === "connecting") { label.textContent = "Đang kết nối…"; dot.classList.add("off"); }
     else { label.textContent = s; dot.classList.add("off"); }
   });
-  rtcNegotiate().then(() => {
+  await rtcNegotiate();
+}
+
+$("#btn-conn").addEventListener("click", async () => {
+  try {
+    const info = await fetchPreviewInfo();
+    const customUrl = ($("#preview-url")?.value || "").trim();
+    const transport = info?.transport || "webrtc";
+
+    if (transport === "rtmp" || transport === "rtcpush" || customUrl) {
+      // HLS preview qua MediaMTX
+      const url = customUrl || info?.hls_url;
+      if (!url) {
+        toast("Server chưa cấu hình HLS — set HLS URL ở Preview URL field", "error");
+        return;
+      }
+      await connectHLS(url);
+    } else {
+      // WebRTC realtime
+      await connectWebRTC();
+    }
     $("#btn-conn").hidden = true;
     $("#btn-disconn").hidden = false;
-  }).catch((e) => toast("RTC error: " + e, "error"));
+  } catch (e) {
+    toast("Preview error: " + e, "error");
+  }
 });
 
 $("#btn-disconn").addEventListener("click", () => {
   if (_pc) { _pc.close(); _pc = null; }
-  $("#video").srcObject = null;
+  if (_hls) { _hls.destroy(); _hls = null; }
+  const video = $("#video");
+  video.srcObject = null;
+  video.removeAttribute("src");
+  video.load();
   $("#audio").srcObject = null;
   $("#btn-conn").hidden = false;
   $("#btn-disconn").hidden = true;

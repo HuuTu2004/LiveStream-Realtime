@@ -32,19 +32,25 @@
           <div class="live-main">
             <div class="card video-card">
               <div class="video-wrap">
-                <video id="video" autoplay playsinline muted></video>
-                <audio id="audio" autoplay></audio>
+                <video id="video" autoplay playsinline controls muted></video>
+                <audio id="audio" autoplay hidden></audio>
                 <div class="video-overlay" id="video-overlay">
                   <span class="status-dot off"></span>
                   <span id="conn-label">Chưa kết nối</span>
                 </div>
               </div>
               <div class="video-controls">
-                <button id="btn-conn" class="btn-primary">▶ Kết nối WebRTC</button>
+                <button id="btn-conn" class="btn-primary">▶ Kết nối preview</button>
                 <button id="btn-disconn" class="btn-secondary" hidden>■ Ngắt</button>
-                <label class="inline"><input type="checkbox" id="use-stun" />Use STUN</label>
+                <label class="inline" title="HLS URL (auto-detect /ice-config); để trống = từ Vast localhost qua Tailscale">
+                  Preview URL:
+                  <input type="text" id="preview-url" placeholder="auto" style="width:280px" />
+                </label>
                 <span class="spacer"></span>
                 <input type="text" id="sessionid" value="0" style="width:60px" title="Session ID" />
+              </div>
+              <div class="muted" style="font-size:12px;margin-top:6px">
+                Transport <code>rtmp</code> → preview qua HLS (delay 3-5s). Transport <code>webrtc</code> → preview realtime &lt;1s.
               </div>
             </div>
 

@@ -93,6 +93,43 @@ async def ice_config(request):
     """
     return web.json_response(rtc_manager.ice_config_for_client())
 
+
+async def preview_info(request):
+    """Trả thông tin transport hiện tại + URL HLS để admin preview.
+
+    transport=webrtc → admin connect WebRTC realtime (<1s)
+    transport=rtmp   → admin xem qua HLS từ MediaMTX (~3-5s delay)
+
+    HLS URL default = http://<same_host>:8888/live/avatar/index.m3u8
+    (MediaMTX default HLS port 8888, path = stream name từ --push_url).
+    Override qua env HLS_PREVIEW_URL nếu MediaMTX ở host khác.
+    """
+    import os as _os
+    from urllib.parse import urlparse
+    transport = getattr(opt, 'transport', 'webrtc')
+    push_url = getattr(opt, 'push_url', '')
+    # Extract stream path từ push_url (vd rtmp://host:1935/live/avatar → live/avatar)
+    hls_url = _os.environ.get('HLS_PREVIEW_URL', '')
+    if not hls_url and push_url:
+        try:
+            p = urlparse(push_url)
+            host = p.hostname or 'localhost'
+            # Browser admin connect tới same host as page, replace ':8010' với ':8888'
+            req_host = request.host.split(':')[0]
+            if host in ('localhost', '127.0.0.1'):
+                host = req_host
+            stream_path = p.path.lstrip('/').rstrip('/')
+            if stream_path:
+                hls_url = f"http://{host}:8888/{stream_path}/index.m3u8"
+        except Exception:
+            pass
+    return web.json_response({
+        "transport": transport,
+        "push_url": push_url,
+        "hls_url": hls_url,
+    })
+
+
 async def on_shutdown(app):
     await rtc_manager.shutdown()
 
@@ -150,6 +187,7 @@ def main():
     appasync.on_shutdown.append(on_shutdown)
     appasync.router.add_post("/offer", offer)
     appasync.router.add_get("/ice-config", ice_config)
+    appasync.router.add_get("/preview-info", preview_info)
 
     # 注册 server/routes.py 中的通用 API 路由
     setup_routes(appasync)
