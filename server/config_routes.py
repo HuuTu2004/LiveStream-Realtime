@@ -37,8 +37,8 @@ CONFIG_SCHEMA: dict[str, dict] = {
             "description": "TTS engine: vieneu (Apache 2.0, realtime CPU/GPU)"},
     # VieNeu-TTS
     "vieneu_mode": {"type": "str", "group": "tts", "restart": True,
-                    "choices": ["gpu", "standard", "turbo", "remote"],
-                    "description": "gpu = max perf (auto lmdeploy) | standard (GGUF+ONNX) | turbo (0.3B 2x) | remote (external)"},
+                    "choices": ["turbo", "standard", "gpu", "remote"],
+                    "description": "turbo (DEFAULT, 0.3B 2x, no lmdeploy) | standard (GGUF+ONNX) | gpu (cần lmdeploy riêng) | remote"},
     "vieneu_emotion": {"type": "str", "group": "tts", "restart": True,
                        "choices": ["natural", "storytelling"],
                        "description": "VieNeu emotion preset"},

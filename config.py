@@ -60,10 +60,12 @@ def parse_args():
                         help="(legacy) reference transcript")
 
     # ─── VieNeu-TTS (Vietnamese, realtime, Apache 2.0) ─────────────────
-    parser.add_argument('--vieneu_mode', type=str, default='gpu',
+    parser.add_argument('--vieneu_mode', type=str, default='turbo',
                         choices=['gpu', 'standard', 'turbo', 'remote'],
-                        help="VieNeu mode: gpu (DEFAULT — tự spawn lmdeploy local, max GPU perf) | "
-                             "standard (GGUF+ONNX local) | turbo (0.3B 2x faster) | remote (external lmdeploy)")
+                        help="VieNeu mode: turbo (DEFAULT — 0.3B 2x faster CPU/GPU, không cần lmdeploy) | "
+                             "standard (GGUF+ONNX local, chất lượng cao) | gpu (tự spawn lmdeploy, "
+                             "cần cài lmdeploy riêng — chưa stable trên Blackwell sm_120) | "
+                             "remote (external lmdeploy)")
     parser.add_argument('--vieneu_emotion', type=str, default='natural',
                         choices=['natural', 'storytelling'],
                         help="VieNeu emotion preset")
