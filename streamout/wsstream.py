@@ -116,16 +116,25 @@ class WSStreamOutput(BaseOutput):
         cmd = [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'warning',
             '-fflags', '+nobuffer', '-flags', 'low_delay',
-            # Video input — raw RGB24 từ stdin
-            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
-            '-s', f'{w}x{h}', '-r', str(self.fps),
-            '-thread_queue_size', '512',
-            '-i', 'pipe:0',
+            # Skip stream probing — bắt buộc khi mix stdin + TCP listen, ko skip
+            # thì ffmpeg probe rawvideo stdin trước, đọc 5MB → block tới khi
+            # Python push frame → audio TCP listener không bao giờ mở.
+            '-probesize', '32', '-analyzeduration', '0',
+            # ─── INPUT ORDER MATTERS ────────────────────────────────────────
+            # Audio TCP listen TRƯỚC — ffmpeg mở listen socket ngay → Python
+            # connect thread connect được. Sau đó ffmpeg mới mở stdin (pipe:0
+            # luôn ready). Đảo lại (stdin trước) → chicken-and-egg deadlock.
+            #
             # Audio input — f32le PCM mono qua TCP listen
             '-f', 'f32le', '-ar', str(self.sample_rate), '-ac', '1',
             '-thread_queue_size', '512',
             '-listen_timeout', '20000',
             '-i', f'tcp://127.0.0.1:{a_port}?listen=1',
+            # Video input — raw RGB24 từ stdin
+            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+            '-s', f'{w}x{h}', '-r', str(self.fps),
+            '-thread_queue_size', '512',
+            '-i', 'pipe:0',
             # Encode: MPEG-1 video + MP2 audio (JSMpeg-compatible)
             '-c:v', 'mpeg1video',
             '-b:v', str(self.video_bitrate),
