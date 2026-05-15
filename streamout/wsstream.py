@@ -135,10 +135,6 @@ class WSStreamOutput(BaseOutput):
             '-s', f'{w}x{h}', '-r', str(self.fps),
             '-thread_queue_size', '512',
             '-i', 'pipe:0',
-            # High-quality resampler input audio 16kHz → output 44.1kHz (MP2 chuẩn).
-            # Default `swr` resampler tạo aliasing rè khi upsample 2.75x.
-            # `soxr` (SoX resampler) precision 28-bit → clean smooth output.
-            '-af', 'aresample=resampler=soxr:precision=28:async=1000',
             # Encode: MPEG-1 video + MP2 audio (JSMpeg-compatible)
             '-c:v', 'mpeg1video',
             '-b:v', str(self.video_bitrate),
