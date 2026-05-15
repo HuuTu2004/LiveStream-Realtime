@@ -95,6 +95,17 @@ pip install --no-cache-dir \
   --extra-index-url https://pypi.org/simple/ \
   -r "${REQ_FILE}"
 
+# ─── 4b. llama-cpp-python CUDA build (cho vieneu standard GGUF GPU offload) ─
+# Pip install ở trên dùng CPU wheel — GGUF chạy CPU = chậm. Upgrade sang CUDA
+# wheel để vieneu standard mode push GGUF lên GPU → 0.26s first chunk.
+echo "[setup] upgrading llama-cpp-python to CUDA build (cu121)..."
+pip install --no-cache-dir --force-reinstall --upgrade \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121/ \
+  llama-cpp-python==0.3.16 || \
+  echo "[WARN] llama-cpp-python CUDA install failed — vieneu sẽ chạy CPU mode"
+# numpy có thể bị bump >=2.0 → downgrade back để tương thích wav2lip
+pip install --no-cache-dir 'numpy<2.0' >/dev/null 2>&1 || true
+
 # ─── 5. Data dirs ──────────────────────────────────────────────────────────
 mkdir -p data/avatars data/uploads/raw data/uploads/jobs data/uploads/previews models
 

@@ -10,10 +10,11 @@
 #    AVATAR_ID         (default: wav2lip256_avatar1)
 #    AVATAR_MODEL      wav2lip | musetalk | ultralight   (default: wav2lip)
 #    TTS_ENGINE        vieneu                              (default: vieneu)
-#    VIENEU_MODE       gpu | standard | turbo | remote    (default: turbo)
+#    VIENEU_MODE       gpu | standard | turbo | remote    (default: standard)
 #    TRANSPORT         wsstream | virtualcam              (default: wsstream)
 #    LISTEN_PORT       (default: 8010)
 #    BRAIN_ENABLED     true | false                       (default: false)
+#    STUDIO_ENABLED    true | false                       (default: false)
 #    OPENAI_API_KEY    (cho LLM brain)
 #    LLM_URL           (default: https://api.openai.com/v1)
 #    LLM_MODEL         (default: gpt-4o-mini)
@@ -30,6 +31,14 @@ if [[ -z "${VIRTUAL_ENV:-}" ]] && [[ -f "${VENV_DIR}/bin/activate" ]]; then
   source "${VENV_DIR}/bin/activate"
 fi
 
+# ─── CUDA libs cho llama-cpp-python (vieneu standard mode GPU) ────────
+# pytorch/pytorch Docker image không có system CUDA runtime. Torch bundle
+# CUDA libs trong site-packages/nvidia/*/lib. Prepend vào LD_LIBRARY_PATH.
+if [[ -d /opt/conda/lib/python3.11/site-packages/nvidia ]]; then
+  TORCH_CUDA_LIBS="$(find /opt/conda/lib/python3.11/site-packages/nvidia -name '*.so*' 2>/dev/null | xargs -I{} dirname {} 2>/dev/null | sort -u | tr '\n' ':')"
+  export LD_LIBRARY_PATH="${TORCH_CUDA_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 AVATAR_ID="${AVATAR_ID:-wav2lip256_avatar1}"
 AVATAR_MODEL="${AVATAR_MODEL:-wav2lip}"
 TTS_ENGINE="${TTS_ENGINE:-vieneu}"
@@ -41,9 +50,11 @@ PERSONA="${PERSONA:-linh_vi}"
 LLM_URL="${LLM_URL:-https://api.openai.com/v1}"
 LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}"
 LLM_API_KEY="${OPENAI_API_KEY:-${LLM_API_KEY:-none}}"
-STUDIO_ENABLED="${STUDIO_ENABLED:-true}"
+STUDIO_ENABLED="${STUDIO_ENABLED:-false}"
 
-VIENEU_MODE="${VIENEU_MODE:-turbo}"
+# Default = standard (GGUF Q4_K_M GPU qua llama-cpp-python CUDA — chất lượng cao nhất,
+# streaming <300ms first chunk). Trước default 'turbo' = 0.3B CPU = chậm hơn.
+VIENEU_MODE="${VIENEU_MODE:-standard}"
 VIENEU_EMOTION="${VIENEU_EMOTION:-natural}"
 VIENEU_VOICE_ID="${VIENEU_VOICE_ID:-}"
 VIENEU_PORT="${VIENEU_PORT:-23333}"
@@ -90,4 +101,6 @@ fi
 
 echo "[start] python app.py ${ARGS[*]}"
 echo "[start] open: http://\$PUBLIC_IPADDR:${LISTEN_PORT}/"
+echo "[start] LD_LIBRARY_PATH = ${LD_LIBRARY_PATH:-(unset)}" | head -c 200
+echo
 exec python -u app.py "${ARGS[@]}" 2>&1 | tee server.log
