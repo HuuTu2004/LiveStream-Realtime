@@ -13,6 +13,10 @@
 aiohttp>=3.9.0
 aiohttp_cors
 
+# ─── PyAV (av) — required bởi avatars/base_avatar.py cho AudioFrame/VideoFrame
+# Trước được aiortc kéo theo, nay aiortc removed nên cần explicit.
+av
+
 # ─── LLM brain (async OpenAI / Ollama / vLLM) ─────────────────────────
 openai>=1.40.0
 httpx>=0.27.0
