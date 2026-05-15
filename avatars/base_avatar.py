@@ -592,14 +592,14 @@ class BaseAvatar:
 
     def render(self,quit_event):
         self.quit_event = quit_event
-        
+
         self.init_customindex()
         self.tts.render(quit_event)
 
         infer_quit_event = mp.Event()
         infer_thread = Thread(target=self.inference, args=(infer_quit_event,))
         infer_thread.start()
-        
+
         process_quit_event = Event()
         process_thread = Thread(target=self.process_frames, args=(process_quit_event,))
         process_thread.start()
@@ -608,7 +608,7 @@ class BaseAvatar:
         totaltime=0
         _starttime=time.perf_counter()
         _totalframe=0
-        while not quit_event.is_set(): 
+        while not quit_event.is_set():
             t = time.perf_counter()
             self.asr.run_step()
 

@@ -196,10 +196,16 @@ class WSStreamOutput(BaseOutput):
                 return
             self._audio_sock = a
             logger.info("[WSStream] connected to ffmpeg (video=stdin, audio=tcp)")
-            # KHÔNG pre-fill silence — sẽ đẩy audio stream PTS lệch so với
-            # video PTS → lip-sync lệch chính xác = số giây prefill.
-            # Audio sẽ tự được fill silence chunk-by-chunk khi queue empty
-            # trong _write_audio_chunk (mỗi chunk 40ms cùng video frame).
+            # Pre-fill 100ms silence (small, không gây sync drift đáng kể nhưng đủ
+            # để ffmpeg bắt đầu mux/encode → drain stdin → push_video không block).
+            # Nếu không prefill: ffmpeg đợi audio mãi → stdin pipe fills tới khi
+            # Python write block → render thread freezes → toàn pipeline deadlock.
+            try:
+                prefill_samples = self.sample_rate // 10  # 1600 samples @ 16kHz = 100ms
+                a.sendall(np.zeros(prefill_samples, dtype=np.float32).tobytes())
+                logger.info(f"[WSStream] prefilled {prefill_samples} silent samples")
+            except Exception as e:
+                logger.warning(f"[WSStream] audio prefill failed: {e}")
 
         threading.Thread(target=_connect_audio, daemon=True, name='ws-connect-audio').start()
 
