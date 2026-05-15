@@ -2,30 +2,52 @@
 
 Quy trình deploy nhanh — ~10-15 phút từ instance mới đến server chạy.
 
-> **Transport hiện tại = `wsstream`** (MPEG-TS over WebSocket + JSMpeg). Chỉ cần
-> map TCP port 8010 — không cần UDP, không cần TURN server, bypass NAT hoàn toàn.
+> **Transport = `wsstream`** (MPEG-TS over WebSocket + JSMpeg). Chỉ cần TCP
+> port 8010 — không cần UDP, không cần TURN server, bypass NAT hoàn toàn.
 
-> **TTS mặc định = `vieneu_http`** (production multi-venv).
-> `setup.sh` tạo 2 venv riêng biệt — `venv_talking` (torch 2.4 cho wav2lip)
-> và `venv_vieneu` (torch 2.6+ cho vieneu + lmdeploy). `start.sh` spawn
-> `vieneu_server.py` trước, đợi `/health` OK, rồi launch `app.py`.
-> ZERO pip conflict giữa wav2lip và vieneu codec — fix dứt điểm vấn đề
-> "rè/click/bật mất từ" do ONNX int8 codec.
+> **TTS = `vieneu_http`** production 3-venv. Author defaults +
+> hybrid batch-streaming với ONNX codec → 5x realtime + audio sạch (no rè).
+
+## Architecture (3 venv, 3 process trên 1 instance Vast.ai)
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ Process A: vieneu_server.py  (venv_vieneu, torch 2.6+)       │
-│   listen 127.0.0.1:23334 /infer_stream                       │
-│   auto-spawn lmdeploy api_server :23333 (mode=gpu)           │
+│ Process A: lmdeploy api_server  (venv_lmdeploy, torch 2.4)   │
+│   :23333 /v1/chat/completions                                 │
+│   VieNeu-TTS-v2 backbone (Qwen3 bfloat16, TurboMind)          │
+│   --chat-template scripts/vastai/vieneu_chat_template.json    │
 └──────────────────────────────────────────────────────────────┘
-                          ↓ HTTP stream (length-prefixed f32le PCM 24kHz)
+                          ↓ HTTP OpenAI API (text → audio_tokens)
 ┌──────────────────────────────────────────────────────────────┐
-│ Process B: app.py            (venv_talking, torch 2.4)       │
-│   tts/vieneu_http.py → POST :23334                           │
-│   wav2lip avatar pipeline + wsstream                         │
-│   listen 0.0.0.0:8010 /                                      │
+│ Process B: vieneu_server.py     (venv_vieneu, torch 2.6)     │
+│   :23334 /infer_stream                                        │
+│   Codec ONNX int8 (5x realtime, clean)                        │
+│   Hybrid: server split sentences → tts.infer() batch mỗi câu │
+│   → stream HTTP response chunks 200ms                         │
+└──────────────────────────────────────────────────────────────┘
+                          ↓ HTTP length-prefixed f32le PCM 24kHz
+┌──────────────────────────────────────────────────────────────┐
+│ Process C: app.py               (venv_talking, torch 2.4)    │
+│   :8010 /                                                     │
+│   tts/vieneu_http.py → soxr resample 24→16kHz                 │
+│   wav2lip avatar lip-sync + wsstream MPEG-TS + WebSocket      │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+## TTS pipeline knobs (production-tuned)
+
+| Component | Setting | Reason |
+|-----------|---------|--------|
+| Backbone | lmdeploy 0.9.0 TurboMind bfloat16 | Author recommend, supports Qwen3 |
+| Chat template | Custom passthrough JSON | Model là raw completion, KHÔNG có chat_template |
+| Codec | `neuphonic/neucodec-onnx-decoder-int8` | 5x realtime + sạch hơn PyTorch trên VieNeu-TTS-v2 |
+| Gen mode | `tts.infer()` per sentence (NOT `infer_stream`) | infer_stream có chunk-boundary artifact |
+| Sampling | temp=1.0, top_k=50, rep_penalty=1.2 | Author API defaults |
+| Resample 24→16k | `soxr.ResampleStream` stateful HQ | scipy resample_poly có FIR transient ở biên |
+| Pre-buffer client | 0.5s | Absorb chunk arrival jitter; ONNX gen 5x realtime nên không cần lớn hơn |
+| Audio dtype | float32 [-1, 1] xuyên suốt | Bỏ int16 cast legacy RTMP |
+| wsstream audio queue | `get(timeout=12ms)` + `get_buffer_size()` | Absorb GPU batch jitter, throttle render loop |
+| ffmpeg MP2 | 256kbps + `aresample=soxr` HQ | Mono speech transparent, đỡ rè internal resample |
 
 ## TL;DR
 
@@ -164,6 +186,24 @@ JSMpeg lib auto-load từ jsDelivr CDN (~50KB) → connect WS tới
 Status overlay sẽ thành **"WSStream (~150ms)"** với chấm xanh khi stream OK.
 
 Test lip-sync: gõ text vào **"💬 Chat thẳng với avatar"** → bấm "▶ Avatar nói".
+
+## Audio quality — bugs đã fix (history)
+
+Các vấn đề audio phổ biến + fix tương ứng (đã bake-in vào production):
+
+| Symptom | Root cause | Fix |
+|---------|-----------|-----|
+| Avatar im lặng dù `/human` trả `code:0` | `type='chat'` đi qua LLM brain — fail 401 khi `LLM_API_KEY=none` | `server/routes.py` fallback echo khi no key |
+| Tạch + clip + DRC distortion | Legacy RTMP `int16 * 32767` cast trong `base_avatar.py` nhưng wsstream input là f32le | Bỏ cast, giữ float32 [-1,1] |
+| Tạch periodic mỗi 200ms | `scipy.signal.resample_poly` chunk-by-chunk → FIR transient ở biên | Switch `soxr.ResampleStream` (stateful) |
+| Silence interleave 35% trong audio | ASR.run_step drain quá nhanh, asr.queue empty → 10ms timeout chèn silence frame | `WSStream.get_buffer_size()` = qsize//2 → render loop throttle |
+| Gap 200-500ms giữa sentences | vieneu_http split text rồi gọi từng câu, mỗi câu có TTFB 0.5s | Server tự split, không split ở client |
+| Tẹt tẹt subtle pattern | `vieneu.infer_stream()` decode mỗi chunk độc lập → boundary artifacts | Server dùng `tts.infer()` batch per sentence, KHÔNG `infer_stream` |
+| Rè codec output | `neuphonic/distill-neucodec` PyTorch full incompat với lmdeploy LM tokens | Switch `neuphonic/neucodec-onnx-decoder-int8` (5x faster + clean) |
+| TTS thread chết sau exception | `BaseTTS.process_tts` không catch unhandled exception | Wrap `txt_to_audio` trong try/except outer |
+| Audio underrun chèn silence 40ms | `wsstream._write_audio_chunk` dùng `get_nowait()` | `get(timeout=12ms)` blocking grace |
+| lmdeploy load model fail "no Qwen3 rewrite" | lmdeploy <0.9 không có Qwen3 architecture support | Pin `lmdeploy==0.9.0` |
+| lmdeploy "base template chat task" error | Vieneu gửi `/chat/completions`, lmdeploy mặc định yêu cầu template | Custom passthrough JSON `vieneu_chat_template.json` |
 
 ## Troubleshooting
 

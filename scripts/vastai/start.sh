@@ -4,12 +4,14 @@
 #
 #  Spawns 3 processes sequentially, waiting each healthy before next:
 #
-#    1. lmdeploy api_server  (venv_lmdeploy, torch 2.4)   → :23333
-#       └─ VieNeu-TTS-v2 LM backbone bfloat16 OpenAI API
-#    2. vieneu_server.py     (venv_vieneu, torch 2.6)     → :23334
-#       └─ codec PyTorch full + remote LM via :23333
-#    3. app.py               (venv_talking, torch 2.4)    → :8010
-#       └─ wav2lip + web + wsstream
+#    1. lmdeploy api_server  (venv_lmdeploy, torch 2.4 cu121, lmdeploy 0.9.0)
+#       → :23333  Qwen3 backbone bfloat16, OpenAI-compat /v1/chat/completions
+#       (custom passthrough chat-template vieneu_chat_template.json)
+#    2. vieneu_server.py     (venv_vieneu, torch 2.4+, ONNX codec)
+#       → :23334  /infer_stream
+#       Hybrid: split sentences → tts.infer() batch each → stream HTTP chunks
+#    3. app.py               (venv_talking, torch 2.4+, wav2lip + soxr)
+#       → :8010  /  (web + avatar + wsstream MPEG-TS over WS)
 #
 #  Browser truy cập http://<PUBLIC_IPADDR>:8010 (chỉ port này expose public).
 #
@@ -20,7 +22,7 @@
 #    LMDEPLOY_TP       Tensor-parallel size              (default: 1)
 #    VIENEU_HTTP_PORT  (default: 23334)
 #    VIENEU_EMOTION    natural | storytelling            (default: natural)
-#    VIENEU_MODEL      HF repo                            (default: pnnbao-ump/VieNeu-TTS-v2)
+#    VIENEU_MODEL      HF repo                  (default: pnnbao-ump/VieNeu-TTS-v2)
 #    TRANSPORT         wsstream | virtualcam             (default: wsstream)
 #    LISTEN_PORT       (default: 8010)
 #    BRAIN_ENABLED     true | false                      (default: false)
@@ -62,6 +64,14 @@ STUDIO_ENABLED="${STUDIO_ENABLED:-false}"
 
 LMDEPLOY_PORT="${LMDEPLOY_PORT:-23333}"
 LMDEPLOY_TP="${LMDEPLOY_TP:-1}"
+# KV cache size = fraction of TOTAL VRAM lmdeploy pre-allocate. Default 0.8
+# = 80% GPU dành cho concurrent serving — phí phạm cho TTS single-stream.
+#
+# Sequence length thực tế: 1-2 sentences ≈ 512 audio tokens = 11MB cache đủ.
+# 0.1 = ~2.4GB cache + 600MB Qwen3-0.3B weights + ~1GB workspace = ~4GB total
+# → match doc minimum "4GB+ VRAM", free ~20GB cho avatar pipeline.
+# (musetalk ~6GB, wav2lip ~3GB)
+LMDEPLOY_CACHE="${LMDEPLOY_CACHE:-0.1}"
 VIENEU_HTTP_PORT="${VIENEU_HTTP_PORT:-23334}"
 VIENEU_EMOTION="${VIENEU_EMOTION:-natural}"
 VIENEU_MODEL="${VIENEU_MODEL:-pnnbao-ump/VieNeu-TTS-v2}"
@@ -120,6 +130,7 @@ nohup "${VENV_LMDEPLOY_DIR}/bin/python" -u -m lmdeploy \
   --server-port "${LMDEPLOY_PORT}" \
   --tp "${LMDEPLOY_TP}" \
   --chat-template "${LMDEPLOY_CHAT_TEMPLATE:-scripts/vastai/vieneu_chat_template.json}" \
+  --cache-max-entry-count "${LMDEPLOY_CACHE}" \
   > logs/lmdeploy.log 2>&1 &
 LMDEPLOY_PID=$!
 echo "[start] lmdeploy pid=${LMDEPLOY_PID} → logs/lmdeploy.log"

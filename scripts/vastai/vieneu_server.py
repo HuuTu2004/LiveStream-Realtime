@@ -48,8 +48,8 @@ def parse_args():
     p.add_argument("--model", default=os.environ.get("VIENEU_MODEL", "pnnbao-ump/VieNeu-TTS-v2"))
     p.add_argument("--lmdeploy_url", default=os.environ.get("LMDEPLOY_URL", "http://127.0.0.1:23333/v1"),
                    help="OpenAI-compatible api_base của lmdeploy backbone server")
-    p.add_argument("--codec_repo", default=os.environ.get("VIENEU_CODEC_REPO", "neuphonic/distill-neucodec"),
-                   help="HF repo neucodec PyTorch full quality (KHÔNG dùng ONNX int8 — rè)")
+    p.add_argument("--codec_repo", default=os.environ.get("VIENEU_CODEC_REPO", "neuphonic/neucodec-onnx-decoder-int8"),
+                   help="HF repo neucodec. ONNX int8 = 5x faster + sạch hơn PyTorch trên VieNeu-TTS-v2 + lmdeploy.")
     return p.parse_args()
 
 
@@ -129,19 +129,37 @@ def main():
         })
         await resp.prepare(request)
 
+        # Split text thành câu nhỏ (split tại '. ! ? \n'). Mỗi câu batch
+        # infer() (clean, không có streaming chunk artifact). Stream nối
+        # tiếp các câu → client thấy âm thanh đến từng câu, TTFB = thời
+        # gian gen câu đầu (~0.5-2s với ONNX codec 5x realtime).
+        import re
+        sentences = [s.strip() for s in re.split(r'(?<=[\.\!\?\n])\s+', text) if s.strip()]
+        if not sentences: sentences = [text]
+        log(f"split {len(sentences)} sentences")
+
         start = time.perf_counter()
         chunks_sent = 0
+        first_sent_at = None
         try:
-            for pcm_24k in tts.infer_stream(**infer_kwargs):
-                arr = np.asarray(pcm_24k, dtype=np.float32)
-                if arr.ndim > 1:
-                    arr = arr[:, 0] if arr.shape[1] < arr.shape[0] else arr[0, :]
-                payload = arr.tobytes()
-                await resp.write(struct.pack(">I", len(payload)))
-                await resp.write(payload)
-                chunks_sent += 1
-                if chunks_sent == 1:
-                    log(f"first chunk @{time.perf_counter() - start:.2f}s text={text[:30]!r}")
+            for sent_idx, sentence in enumerate(sentences):
+                sent_kwargs = dict(infer_kwargs)
+                sent_kwargs["text"] = sentence
+                t_sent = time.perf_counter()
+                audio = tts.infer(**sent_kwargs)
+                arr = np.asarray(audio, dtype=np.float32).reshape(-1)
+                gen_time = time.perf_counter() - t_sent
+                if first_sent_at is None:
+                    first_sent_at = time.perf_counter() - start
+                    log(f"first sentence gen @{first_sent_at:.2f}s ({len(arr)/24000:.2f}s audio) text={sentence[:30]!r}")
+                # Chunk 200ms slices cho HTTP streaming response
+                CHUNK_SAMPLES = 24000 // 5  # 200ms @ 24kHz
+                for i in range(0, len(arr), CHUNK_SAMPLES):
+                    slice_ = arr[i:i+CHUNK_SAMPLES]
+                    payload = slice_.tobytes()
+                    await resp.write(struct.pack(">I", len(payload)))
+                    await resp.write(payload)
+                    chunks_sent += 1
         except Exception as e:
             log(f"infer error: {e}\n{traceback.format_exc()}")
         try:

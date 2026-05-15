@@ -3,40 +3,55 @@
 Digital-human livestream bán hàng tiếng Việt: avatar lip-sync (wav2lip) +
 VieNeu-TTS voice cloning + LLM sales brain + TikTok scraper.
 
-## Deploy topology — production multi-venv (1 instance, 2 process)
+## Deploy topology — production 3-venv (1 Vast.AI instance, 3 process)
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Vast.AI single GPU instance (RTX 3090/4090 24GB+)                  │
-│                                                                     │
-│  ┌───────────────────────────────────┐                              │
-│  │ venv_vieneu  (torch 2.6+ cu121)   │                              │
-│  │  • vieneu[gpu] (PyTorch neucodec) │  ← full quality, không      │
-│  │  • lmdeploy (TurboMind backend)   │    ONNX int8 → 0 rè/click   │
-│  │                                   │                              │
-│  │  scripts/vastai/vieneu_server.py  │                              │
-│  │   ├─ lmdeploy api_server :23333   │                              │
-│  │   └─ aiohttp /infer_stream :23334 │                              │
-│  └─────────────┬─────────────────────┘                              │
-│                │ HTTP stream  [4-byte BE len][f32le PCM 24kHz]      │
-│                │ chunks, terminator length=0                        │
-│                ▼                                                    │
-│  ┌───────────────────────────────────┐                              │
-│  │ venv_talking (torch 2.4 cu121)    │                              │
-│  │  • wav2lip + aiohttp + scipy      │                              │
-│  │  • tts/vieneu_http.py (requests)  │                              │
-│  │                                   │                              │
-│  │  app.py :8010                     │                              │
-│  │   ├─ /                  (web UI)  │                              │
-│  │   ├─ /human, /humanaudio …        │                              │
-│  │   └─ /wsstream/{sid}    (MPEG-TS) │  ← browser via TCP 8010      │
-│  └───────────────────────────────────┘                              │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  Vast.AI single GPU instance (RTX 3090/4090 24GB+)                   │
+│                                                                      │
+│  ┌────────────────────────────────────────────┐                      │
+│  │ venv_lmdeploy   (torch 2.4 cu121)          │                      │
+│  │  • lmdeploy 0.9.0 (TurboMind bfloat16)     │                      │
+│  │  • transformers >=4.51 (Qwen3 arch)        │                      │
+│  │                                             │                      │
+│  │  lmdeploy serve api_server :23333          │                      │
+│  │   • --chat-template vieneu_chat_template.json (passthrough JSON)│
+│  │   • OpenAI-compat /v1/chat/completions     │                      │
+│  └─────────────┬──────────────────────────────┘                      │
+│                │ HTTP (text → audio_tokens "speech_xxx")             │
+│                ▼                                                     │
+│  ┌────────────────────────────────────────────┐                      │
+│  │ venv_vieneu    (torch 2.6 cu124)           │                      │
+│  │  • vieneu[gpu] (mode='remote')             │                      │
+│  │  • neuphonic/neucodec-onnx-decoder-int8    │  ← ONNX, 5x realtime│
+│  │                                             │                      │
+│  │  scripts/vastai/vieneu_server.py :23334    │                      │
+│  │   • Split text per sentence regex          │                      │
+│  │   • tts.infer() batch each sentence (clean)│                      │
+│  │   • Chunk 200ms HTTP response              │                      │
+│  └─────────────┬──────────────────────────────┘                      │
+│                │ HTTP [4-byte BE len][f32le PCM 24kHz][...][len=0]  │
+│                ▼                                                     │
+│  ┌────────────────────────────────────────────┐                      │
+│  │ venv_talking   (torch 2.4 cu121)           │                      │
+│  │  • wav2lip + aiohttp + soxr + scipy        │                      │
+│  │                                             │                      │
+│  │  app.py :8010                              │                      │
+│  │   tts/vieneu_http.py                       │                      │
+│  │    ├─ soxr 24k→16k stateful resample       │                      │
+│  │    ├─ 0.5s pre-buffer absorb jitter        │                      │
+│  │    └─ put_audio_frame() → asr → wav2lip   │                      │
+│  │   /wsstream/{sid} → MPEG-TS over WS browser│                      │
+│  └────────────────────────────────────────────┘                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-Tại sao 2 venv: vieneu codec PyTorch full chất lượng cần torch ≥ 2.5 +
-transformers mới; wav2lip cần giữ torch 2.4 stable. Cài chung 1 venv =
-dep conflict liên tục. Tách = 0 conflict, mỗi process owns môi trường riêng.
+**Tại sao 3 venv tách biệt** (sau khi thử nhiều cấu hình):
+- **venv_lmdeploy** (torch 2.4): lmdeploy 0.9.0 chỉ stable với torch 2.4 cu121. Cài chung với neucodec/vieneu mới = `xgrammar/tvm_ffi/torch_c_dlpack_ext` ABI mismatch.
+- **venv_vieneu** (torch 2.6): neucodec PyTorch + transformers cần torch ≥2.5. Cài chung với lmdeploy = xung đột deps.
+- **venv_talking** (torch 2.4): wav2lip stable với torch 2.4. Cài chung vieneu mới = pip resolver lock.
+
+3 venv giao tiếp qua HTTP. Zero ABI conflict. Mỗi process owns torch riêng.
 
 ## Folder layout
 

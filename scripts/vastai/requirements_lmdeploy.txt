@@ -1,27 +1,24 @@
 # ──────────────────────────────────────────────────────────────────────
 #  venv_lmdeploy — chỉ chứa lmdeploy + torch 2.4 cu121 (combo stable).
 #
-#  Job duy nhất: chạy `lmdeploy serve api_server` cho VieNeu-TTS-v2 LM
-#  backbone (bfloat16, FlashAttention, paged KV cache) trên :23333.
-#  Expose OpenAI-compatible /v1/chat/completions → vieneu_server (venv_vieneu)
-#  call vào để gen audio tokens.
+#  Job duy nhất: chạy `lmdeploy serve api_server pnnbao-ump/VieNeu-TTS-v2`
+#  trên :23333 với --chat-template scripts/vastai/vieneu_chat_template.json.
+#  Expose OpenAI-compat /v1/chat/completions → vieneu_server (venv_vieneu)
+#  POST tới để gen audio_tokens.
 #
-#  TUYỆT ĐỐI KHÔNG cài vieneu/neucodec/transformers mới vào đây — sẽ kéo
-#  torch upgrade phá ABI của lmdeploy. venv này tách hẳn cho lmdeploy.
-#
-#  Torch 2.4 cu121 install riêng bằng setup.sh từ pytorch index, KHÔNG
-#  trong file này.
+#  TUYỆT ĐỐI KHÔNG cài vieneu/neucodec/transformers 5+ vào đây — sẽ kéo
+#  torch upgrade → phá ABI lmdeploy/xgrammar (libtorch_c_dlpack_ext bound
+#  to torch 2.4 cxx11).
 # ──────────────────────────────────────────────────────────────────────
 
+# lmdeploy 0.9.0 = bản đầu tiên có Qwen3ForCausalLM model rewrite. Cũ hơn
+# (0.7-0.8) không load được VieNeu-TTS-v2. Mới hơn (0.10+) chưa test.
 lmdeploy==0.9.0
-# lmdeploy 0.9.0 = bản đầu tiên có Qwen3ForCausalLM rewrite trong pytorch engine.
-# Đã bỏ dependency LogitsWarper. Hỗ trợ qwen3 (cần cho VieNeu-TTS-v2).
-# torch 2.4 cu121 đồng bộ với xgrammar/tvm_ffi wheels của 0.9 (cùng torch 2.4 ABI).
 
 # transformers 4.51+ cần thiết để nhận diện qwen3 architecture.
-# 4.57.6 là bản latest 4.x ổn định.
+# Pin <5.0 vì 5.x cần torch>=2.11 (cpp extensions).
 transformers>=4.51,<5.0
 huggingface-hub<1.0
 
-# lmdeploy 0.7.2 known bug: thiếu khai báo trong deps → add tay.
+# lmdeploy 0.9 known bug: thiếu khai báo trong deps → add tay.
 partial_json_parser

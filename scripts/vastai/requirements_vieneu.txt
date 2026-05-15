@@ -1,34 +1,39 @@
 # ──────────────────────────────────────────────────────────────────────
-#  venv_vieneu — isolated từ venv_talking (wav2lip).
-#  Chỉ cài lib vieneu cần — không leak ra venv_talking.
+#  venv_vieneu — Vieneu remote client (codec ONNX decoder).
+#  Isolated từ venv_lmdeploy (LM backbone) và venv_talking (wav2lip).
+#
+#  Job: scripts/vastai/vieneu_server.py listen :23334
+#       1. Nhận POST /infer_stream với text
+#       2. Split sentences regex
+#       3. tts.infer() batch mỗi câu (mode='remote' → POST lmdeploy :23333
+#          để gen audio_tokens; ONNX codec decode tokens → PCM)
+#       4. Stream HTTP response chunks 200ms PCM 24kHz
 #
 #  Torch CUDA wheel KHÔNG nằm ở đây — setup.sh tự install từ pytorch index
-#  (cu128 cho Blackwell, cu121 cho Ada/Ampere) trước khi pip install -r này.
+#  (cu124 cho Ada/Ampere/Hopper, cu128 cho Blackwell) trước.
 #
-#  vieneu[gpu] kéo theo:
-#    - transformers>=4.45  (cho remote/standard backbone)
-#    - neucodec (PyTorch full quality codec — KHÔNG dùng ONNX int8)
-#    - llama-cpp-python (chỉ dùng cho standard mode)
-#    - aiohttp, requests, openai-client
-#
-#  lmdeploy = GPU TurboMind server backend (cho mode=gpu, bfloat16 full quality).
+#  Vieneu[gpu] kéo theo:
+#    - transformers (cho tokenizer)
+#    - neucodec (codec lib, hỗ trợ cả PyTorch + ONNX runtime)
+#    - llama-cpp-python (chỉ dùng cho standard mode — không dùng ở production)
+#    - aiohttp, requests
+#  Production dùng ONNX decoder (neuphonic/neucodec-onnx-decoder-int8) →
+#  KHÔNG cần PyTorch full neucodec. Tốc độ ~5x realtime + sạch hơn.
 # ──────────────────────────────────────────────────────────────────────
 
 vieneu[gpu]
 aiohttp>=3.9
-# numpy: KHÔNG pin <2.0 vì neucodec 0.0.5 requires numpy>=2.0.2.
-# venv_vieneu isolated — không share numpy với wav2lip → để pip resolve tự do.
 numpy>=2.0
 soundfile>=0.12
+onnxruntime>=1.20
 
-# ── pinned downgrades (post-resolve compat fix) ──────────────────────
-# transformers 5.x require torch>=2.11 (cpp ext + torch.int1). Pin <5.0
-# để giữ torch 2.6 cu124 (cũ hơn nhưng đủ cho neucodec PyTorch full).
+# ── transformers compat ────────────────────────────────────────────────
+# transformers 5.x require torch>=2.11 (cpp extensions). Pin <5.0 cho
+# torch 2.4-2.6 stable.
 transformers>=4.45,<5.0
-# torchao 0.14+ require torch.utils._pytree.register_constant (torch>=2.7).
-# torchtune (neucodec dep) cần torchao. 0.9-0.13 hợp với torch 2.6.
+# torchao 0.14+ require torch._pytree.register_constant (torch>=2.7).
+# torchtune (vieneu indirect dep) cần torchao. 0.9-0.13 hợp với torch 2.4-2.6.
 torchao>=0.9,<0.14
 
-# KHÔNG cài lmdeploy ở đây — sẽ break torch ABI (xgrammar/tvm_ffi cxx11 mismatch)
-# hoặc force torch downgrade về 2.4 (lmdeploy 0.6 pin). Vieneu standard mode
-# dùng llama-cpp-python CUDA cho backbone (GGUF Q4_K_M) → đủ chất lượng.
+# KHÔNG cài lmdeploy ở đây — chạy ở venv_lmdeploy riêng.
+# Vieneu_server kết nối lmdeploy qua HTTP api_base.

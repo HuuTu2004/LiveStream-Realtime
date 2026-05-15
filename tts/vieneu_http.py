@@ -162,16 +162,11 @@ class VieNeuHttpTTS(BaseTTS):
         emit_buf = np.empty(0, dtype=np.float32)
         # Reset pacer deadline mỗi utterance.
         self._pace_deadline = None
-        # Dynamic pre-buffer: scale theo độ dài text (Việt ~10 char/sec speech).
-        # Vieneu gen ~0.95x realtime → deficit ~0.05 sec/sec. Pre-buffer absorb
-        # deficit + chunk arrival jitter. Min 2s (text ngắn), max 6s (text rất dài).
+        # Pre-buffer nhỏ (0.5s) — chỉ để absorb chunk arrival jitter.
+        # Vieneu với ONNX codec gen ~5x realtime → KHÔNG có deficit, không cần
+        # prebuffer lớn nữa. 0.5s đủ smooth.
         explicit = getattr(self.opt, "vieneu_http_prebuffer", None)
-        if explicit and explicit > 0:
-            prebuffer_secs = float(explicit)
-        else:
-            char_count = sum(len(s) for s in sentences)
-            est_audio_secs = char_count / 10.0
-            prebuffer_secs = max(2.0, min(6.0, est_audio_secs * 0.05 + 1.5))
+        prebuffer_secs = float(explicit) if (explicit and explicit > 0) else 0.5
         logger.info(f"[VieNeuHTTP] prebuffer target = {prebuffer_secs:.1f}s")
         prebuffer_samples = int(prebuffer_secs * self.SR_TARGET)
         prebuffered = False
