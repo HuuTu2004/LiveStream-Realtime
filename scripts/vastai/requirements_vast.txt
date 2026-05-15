@@ -1,0 +1,60 @@
+# ════════════════════════════════════════════════════════════════════════
+#  LiveTalking — Vast.AI slim requirements
+#  Loại bỏ deps không dùng (face_alignment commented out, pandas/matplotlib/
+#  scikit-learn/rich không import direct, mediapipe/TikTokLive conditional)
+#  → tiết kiệm ~400MB download + ~5 phút install
+#
+#  Dùng với: pip install -i https://mirrors.aliyun.com/pypi/simple/ \
+#                      --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu/ \
+#                      -r requirements_vast.txt
+# ════════════════════════════════════════════════════════════════════════
+
+# ─── HTTP server + async ──────────────────────────────────────────────
+aiohttp>=3.9.0
+aiohttp_cors
+
+# ─── LLM brain (async OpenAI / Ollama / vLLM) ─────────────────────────
+openai>=1.40.0
+httpx>=0.27.0
+
+# ─── TTS engine (Vietnamese, voice cloning) ──────────────────────────
+vieneu>=1.1.0
+
+# ─── Avatar models (MuseTalk + Wav2Lip + Ultralight) ─────────────────
+transformers==4.46.2
+diffusers
+accelerate
+omegaconf
+einops
+lpips==0.1.3
+
+# ─── Audio processing ────────────────────────────────────────────────
+soundfile==0.12.1
+librosa
+resampy
+numba
+python_speech_features
+ffmpeg-python
+imageio-ffmpeg
+
+# ─── Computer vision (Studio preprocess optional) ────────────────────
+opencv-python-headless
+
+# ─── Numerical core ──────────────────────────────────────────────────
+numpy>=1.24,<2.0
+scipy
+tqdm
+
+# ─── Utilities ───────────────────────────────────────────────────────
+configargparse
+typeguard==2.13.3
+ninja
+packaging
+websockets>=12.0
+websocket-client
+onnxruntime-gpu
+
+# ─── OPTIONAL — uncomment nếu cần feature đó ─────────────────────────
+# TikTokLive>=6.0.0       # chỉ cần khi brain bật + platform=tiktok
+# mediapipe>=0.10.0       # chỉ cần Studio preprocess avatar
+# face_alignment          # DEAD — code commented in genavatar.py

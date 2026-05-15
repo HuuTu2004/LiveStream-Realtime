@@ -63,7 +63,10 @@ Script tự làm:
 1. SSH test connection.
 2. `git clone` repo (hoặc `git pull` nếu đã có).
 3. SCP `models/wav2lip.pth` (~205MB) + `data/avatars/wav2lip256_avatar1/` (~363MB) lên instance.
-4. SSH chạy `scripts/vastai/setup.sh` → cài apt deps, tạo venv, cài PyTorch + CUDA (auto-detect Blackwell → cu128, Ada/Ampere → cu121), cài `requirements.txt`.
+4. SSH chạy `scripts/vastai/setup.sh`:
+   - Apt deps (ffmpeg, build tools)
+   - **Reuse /venv/main nếu Vast image đã có torch** (skip 2.5GB download)
+   - **pip install requirements_vast.txt** (slim, Aliyun mirror, prebuilt llama-cpp wheel) → ~3-5 phút thay vì 20-30 phút
 5. Verify `torch.cuda.is_available()` + GPU name + sm_xx.
 
 Flags hữu ích:
@@ -108,10 +111,30 @@ bash scripts/vastai/start.sh
 
 ## 5. Test trong browser
 
-Mở `http://<PUBLIC_IPADDR>:8010/` → Tab **🔴 Live** → bấm **"▶ Kết nối preview"**.
+### Option A — SSH tunnel (KHÔNG cần map port Vast UI) ⭐ Recommended
+
+Từ máy Windows local, mở 1 cửa sổ PowerShell:
+
+```powershell
+ssh -i $env:USERPROFILE\.ssh\vast_key -p 36378 -L 8010:localhost:8010 root@<IP>
+```
+
+Giữ cửa sổ này open. Mở browser: **`http://localhost:8010/`** → tunnel sang Vast.
+
+Pros: zero Vast UI config, hoạt động ngay, HTTPS không cần.
+
+### Option B — Public port mapping qua Vast UI
+
+1. Vast.AI dashboard → instance → Edit → thêm `8010` vào "Open ports"
+2. Đợi Vast restart container → có PUBLIC_IPADDR + port mới
+3. Mở `http://<PUBLIC_IPADDR>:<mapped_port>/`
+
+### Test workflow
+
+→ Tab **🔴 Live** → bấm **"▶ Kết nối preview"**.
 
 JSMpeg lib auto-load từ jsDelivr CDN (~50KB) → connect WS tới
-`ws://<PUBLIC_IPADDR>:8010/wsstream/0` → decode mpegts → render canvas.
+`/wsstream/0` → decode mpegts → render canvas.
 
 Status overlay sẽ thành **"WSStream (~150ms)"** với chấm xanh khi stream OK.
 

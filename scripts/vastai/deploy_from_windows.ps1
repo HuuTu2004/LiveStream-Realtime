@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Deploy LiveTalking lên Vast.ai instance từ máy Windows local.
 
@@ -51,7 +51,10 @@ param(
   [switch]$SkipSetup
 )
 
-$ErrorActionPreference = 'Stop'
+# NOTE: KHÔNG dùng $ErrorActionPreference = 'Stop' vì SSH/SCP banner trên stderr
+# bị PowerShell 5.1 wrap thành ErrorRecord → triggers Stop dù exit code = 0.
+# Thay bằng check $LASTEXITCODE thủ công trong từng Invoke-Ssh/Send-Scp.
+$ErrorActionPreference = 'Continue'
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 # Tìm LiveTalking/ root: nếu script được chạy từ subdir, đi lên đến khi thấy app.py
 $LiveTalking = $PSScriptRoot
@@ -59,17 +62,20 @@ while ($LiveTalking -and -not (Test-Path (Join-Path $LiveTalking 'app.py'))) {
   $LiveTalking = Split-Path -Parent $LiveTalking
 }
 if (-not $LiveTalking) {
-  throw "Không tìm thấy LiveTalking root (app.py). Chạy script từ trong repo."
+  Write-Error "Không tìm thấy LiveTalking root (app.py). Chạy script từ trong repo."; exit 1
 }
 Write-Host "[deploy] Repo root: $LiveTalking" -ForegroundColor Cyan
 
-$SshArgs = @('-i', $KeyPath, '-o', 'StrictHostKeyChecking=accept-new', '-p', $Port, "$User@$InstanceHost")
-$ScpArgs = @('-i', $KeyPath, '-o', 'StrictHostKeyChecking=accept-new', '-P', $Port)
+# -q = quiet (suppress motd banner, log level set qua -o LogLevel=ERROR)
+$SshArgs = @('-i', $KeyPath, '-q', '-o', 'StrictHostKeyChecking=accept-new',
+             '-o', 'LogLevel=ERROR', '-p', $Port, "$User@$InstanceHost")
+$ScpArgs = @('-i', $KeyPath, '-q', '-o', 'StrictHostKeyChecking=accept-new',
+             '-o', 'LogLevel=ERROR', '-P', $Port)
 
 function Invoke-Ssh([string]$Cmd) {
   Write-Host "[ssh] $Cmd" -ForegroundColor DarkGray
   & ssh @SshArgs $Cmd
-  if ($LASTEXITCODE -ne 0) { throw "ssh failed: exit $LASTEXITCODE" }
+  if ($LASTEXITCODE -ne 0) { Write-Error "ssh failed: exit $LASTEXITCODE"; exit $LASTEXITCODE }
 }
 
 function Send-Scp([string]$LocalPath, [string]$RemotePath) {
@@ -83,7 +89,7 @@ function Send-Scp([string]$LocalPath, [string]$RemotePath) {
   } else {
     & scp @ScpArgs $LocalPath "${User}@${InstanceHost}:${RemotePath}"
   }
-  if ($LASTEXITCODE -ne 0) { throw "scp failed: exit $LASTEXITCODE" }
+  if ($LASTEXITCODE -ne 0) { Write-Error "scp failed: exit $LASTEXITCODE"; exit $LASTEXITCODE }
 }
 
 function Send-AvatarViaTarSsh([string]$AvatarParent, [string]$AvatarId, [string]$RemoteDir) {
@@ -99,7 +105,7 @@ function Send-AvatarViaTarSsh([string]$AvatarParent, [string]$AvatarId, [string]
     return
   }
   & $bash -c $tarCmd
-  if ($LASTEXITCODE -ne 0) { throw "tar+ssh failed: exit $LASTEXITCODE" }
+  if ($LASTEXITCODE -ne 0) { Write-Error "tar+ssh failed: exit $LASTEXITCODE"; exit $LASTEXITCODE }
   Write-Host "[tar] done" -ForegroundColor Green
 }
 

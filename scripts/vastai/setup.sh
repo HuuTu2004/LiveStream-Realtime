@@ -6,10 +6,11 @@
 #  lần (skip step đã xong).
 #
 #  Steps:
-#    1. apt deps (ffmpeg, build tools — KHÔNG cần libsrtp/opus/vpx vì WebRTC đã loại bỏ)
-#    2. Python venv tại venv_talking/
-#    3. PyTorch + CUDA 12.8 (Blackwell sm_120 hỗ trợ — RTX 50xx)
-#    4. requirements.txt
+#    1. apt deps (ffmpeg, build tools)
+#    2. Reuse /venv/main nếu Vast image đã có torch (skip 2.5GB download),
+#       else create fresh venv tại venv_talking/
+#    3. PyTorch + CUDA (auto-detect: Blackwell → cu128, Ada/Ampere → cu121)
+#    4. pip install -r requirements_vast.txt (slim, Aliyun mirror, prebuilt llama-cpp wheel)
 #    5. Verify torch.cuda
 ###############################################################################
 set -euo pipefail
@@ -43,24 +44,40 @@ if command -v apt-get >/dev/null 2>&1; then
 fi
 
 # ─── 2. Python venv ─────────────────────────────────────────────────────────
-if [[ ! -d "${VENV_DIR}" ]]; then
-  echo "[setup] creating venv at ${VENV_DIR}..."
-  python3 -m venv "${VENV_DIR}"
+# Vast.AI image (pytorch/* hoặc nvidia/cuda-*) thường có sẵn venv tại /venv/main
+# với torch + CUDA pre-installed. Re-use nếu có → tiết kiệm ~2.5GB torch download.
+if [[ -f /venv/main/bin/python ]] && /venv/main/bin/python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+  echo "[setup] re-using Vast template venv at /venv/main (torch pre-installed)"
+  ln -sfn /venv/main "${VENV_DIR}"
+else
+  if [[ ! -d "${VENV_DIR}" ]]; then
+    echo "[setup] creating fresh venv at ${VENV_DIR}..."
+    python3 -m venv "${VENV_DIR}"
+  fi
 fi
 # shellcheck disable=SC1090
 source "${VENV_DIR}/bin/activate"
 python -m pip install --upgrade pip setuptools wheel
 
 # ─── 3. PyTorch + CUDA ─────────────────────────────────────────────────────
-# Install torch riêng trước requirements.txt để pin đúng CUDA wheel
+# Install torch CHỈ KHI venv chưa có (skip nếu Vast template đã có sẵn).
 if ! python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
   echo "[setup] installing torch from ${TORCH_INDEX}..."
   pip install --index-url "${TORCH_INDEX}" torch torchvision torchaudio
 fi
 
-# ─── 4. requirements.txt ───────────────────────────────────────────────────
-echo "[setup] pip install -r requirements.txt..."
-pip install -r requirements.txt
+# ─── 4. requirements ─────────────────────────────────────────────────────
+# Ưu tiên requirements_vast.txt (slim — bỏ ~400MB deps không dùng) nếu có.
+# Aliyun mirror: ~10-50x nhanh hơn pypi từ instance LA HostPapa.
+# abetlen wheel index: prebuilt llama-cpp-python (vieneu turbo dep) → bỏ compile 5-10 min.
+REQ_FILE="scripts/vastai/requirements_vast.txt"
+[[ ! -f "${REQ_FILE}" ]] && REQ_FILE="requirements.txt"
+echo "[setup] pip install -r ${REQ_FILE} (Aliyun mirror + prebuilt llama-cpp wheel)"
+pip install --no-cache-dir \
+  -i https://mirrors.aliyun.com/pypi/simple/ \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu/ \
+  --extra-index-url https://pypi.org/simple/ \
+  -r "${REQ_FILE}"
 
 # ─── 5. Data dirs ──────────────────────────────────────────────────────────
 mkdir -p data/avatars data/uploads/raw data/uploads/jobs data/uploads/previews models
