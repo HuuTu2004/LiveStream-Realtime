@@ -211,5 +211,13 @@ def main():
 
 
 if __name__ == '__main__':
-    mp.set_start_method('spawn')
+    # 'spawn' method có thể gây deadlock trên Vast container do mp.Event() cần
+    # shared memory primitives. Default 'fork' trên Linux nhanh + ổn định hơn,
+    # CUDA chỉ cần re-init trong child (mà mình không fork child process).
+    import sys
+    if sys.platform != 'win32':
+        # Linux/Mac: default fork, không set
+        pass
+    else:
+        mp.set_start_method('spawn')
     main()
