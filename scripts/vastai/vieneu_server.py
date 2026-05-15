@@ -101,6 +101,7 @@ def main():
         voice_id = data.get("voice_id")
         ref_audio = data.get("ref_audio")
         ref_text = data.get("ref_text")
+        voice_pkl = data.get("voice_pkl")  # pre-encoded voice (PyTorch codec encode 1 lần)
 
         # Author's official API defaults (xem vieneu README + API docstring):
         # temperature=1.0, top_k=50, repetition_penalty=1.2.
@@ -113,9 +114,20 @@ def main():
             "repetition_penalty": float(data.get("repetition_penalty", 1.2)),
         }
         try:
-            if voice_id:
+            if voice_pkl and os.path.exists(voice_pkl):
+                # Pre-encoded voice (cho voice clone với ONNX codec — ONNX
+                # không encode được nên cần encode trước bằng PyTorch codec
+                # qua scripts/vastai/encode_voice.py).
+                import pickle
+                with open(voice_pkl, "rb") as f:
+                    voice_data = pickle.load(f)
+                infer_kwargs["ref_codes"] = voice_data["ref_codes"]
+                infer_kwargs["ref_text"] = voice_data["ref_text"]
+            elif voice_id:
                 infer_kwargs["voice"] = tts.get_preset_voice(voice_id)
             elif ref_audio and os.path.exists(ref_audio):
+                # WARN: chỉ work với PyTorch codec (encode_code).
+                # ONNX codec phải dùng voice_pkl thay vì ref_audio.
                 infer_kwargs["ref_audio"] = ref_audio
                 if ref_text:
                     infer_kwargs["ref_text"] = ref_text

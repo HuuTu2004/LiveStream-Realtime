@@ -246,8 +246,20 @@ class VieNeuHttpTTS(BaseTTS):
     def _stream_one(self, text: str, voice_id: str, ref_audio: str, ref_text: str) -> Iterator[np.ndarray]:
         """POST /infer_stream → yield np.float32 mono 24kHz chunks."""
         payload = {"text": text}
+        # Voice cloning với ONNX codec server: ưu tiên voice.pkl (đã pre-encode
+        # bằng scripts/vastai/encode_voice.py) cạnh ref_audio. ONNX codec không
+        # encode được, chỉ decode → phải dùng voice.pkl.
+        voice_pkl = ""
+        if ref_audio:
+            base = os.path.splitext(ref_audio)[0]
+            for cand in (f"{base}.pkl", os.path.join(os.path.dirname(ref_audio), "voice.pkl")):
+                if cand and os.path.exists(cand):
+                    voice_pkl = cand
+                    break
         if voice_id:
             payload["voice_id"] = voice_id
+        elif voice_pkl:
+            payload["voice_pkl"] = voice_pkl
         elif ref_audio and os.path.exists(ref_audio):
             payload["ref_audio"] = ref_audio
             if ref_text:
