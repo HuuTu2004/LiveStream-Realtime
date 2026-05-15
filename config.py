@@ -49,9 +49,10 @@ def parse_args():
                         help="custom action json")
 
     # ─── TTS engine ────────────────────────────────────────────────────
-    # `vieneu` — Apache 2.0, realtime CPU/GPU, voice clone 3-5s ref.
-    parser.add_argument('--tts', type=str, default='vieneu',
-                        help="tts plugin: vieneu")
+    # `vieneu_http`  — DEFAULT, production multi-venv (LiveTalking ↔ vieneu_server.py)
+    # `vieneu`       — legacy, vieneu lib in-process (cùng venv với wav2lip — dep conflict)
+    parser.add_argument('--tts', type=str, default='vieneu_http',
+                        help="tts plugin: vieneu_http (production HTTP client) | vieneu (in-process)")
 
     # Legacy refs (giữ để compat với code đọc opt.REF_FILE)
     parser.add_argument('--REF_FILE', type=str, default='',
@@ -85,6 +86,16 @@ def parse_args():
                         help="(gpu mode) Local port cho lmdeploy api_server")
     parser.add_argument('--vieneu_tp', type=int, default=1,
                         help="(gpu mode) Tensor parallel size (1 GPU = 1; 2 GPU = 2)")
+
+    # ─── vieneu_http (production multi-venv client) ──────────────────────
+    # vieneu_server.py chạy trong venv_vieneu (torch 2.6+) listen 23334.
+    # LiveTalking app chạy trong venv_talking (torch 2.4) → HTTP client.
+    parser.add_argument('--vieneu_http_host', type=str, default='127.0.0.1',
+                        help="(vieneu_http) host của vieneu_server.py")
+    parser.add_argument('--vieneu_http_port', type=int, default=23334,
+                        help="(vieneu_http) port của vieneu_server.py")
+    parser.add_argument('--vieneu_http_timeout', type=float, default=120.0,
+                        help="(vieneu_http) read timeout (s) cho mỗi sentence stream")
 
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='wsstream',

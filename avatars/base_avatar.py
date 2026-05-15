@@ -101,14 +101,17 @@ class BaseAvatar:
         self.render_event = Event()
 
         # TTS plugin: VieNeu-TTS (Apache 2.0, realtime, voice clone 3-5s ref)
+        #   vieneu_http  — production multi-venv (HTTP client → vieneu_server.py)
+        #   vieneu       — legacy single-venv (in-process vieneu lib import)
         _tts_modules = {
-            'vieneu': 'tts.vieneu',
+            'vieneu_http': 'tts.vieneu_http',
+            'vieneu':      'tts.vieneu',
         }
 
-        tts_name = getattr(opt, 'tts', 'vieneu')
+        tts_name = getattr(opt, 'tts', 'vieneu_http')
         if tts_name not in _tts_modules:
-            logger.warning(f"TTS '{tts_name}' không được hỗ trợ; fallback sang vieneu.")
-            tts_name = 'vieneu'
+            logger.warning(f"TTS '{tts_name}' không được hỗ trợ; fallback sang vieneu_http.")
+            tts_name = 'vieneu_http'
         importlib.import_module(_tts_modules[tts_name])
         self.tts = registry.create("tts", tts_name, opt=opt, parent=self)
 
@@ -580,7 +583,10 @@ class BaseAvatar:
             self.record_video_data(combine_frame)
 
             for audio_frame in audio_frames:
-                frame = (audio_frame.data * 32767).astype(np.int16)
+                # wsstream + virtualcam đều đọc f32le PCM trong dải [-1.0, 1.0].
+                # KHÔNG convert sang int16 (legacy RTMP) — sẽ làm ffmpeg nhận
+                # giá trị 32767 thay vì 1.0 → clip + DRC → tạch/loạn âm.
+                frame = audio_frame.data.astype(np.float32, copy=False)
                 self.output.push_audio_frame(frame, audio_frame.userdata)
                 self.record_audio_data(frame)
                 

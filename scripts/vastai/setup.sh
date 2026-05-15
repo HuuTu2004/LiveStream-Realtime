@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
 ###############################################################################
-#  LiveTalking — Vast.ai one-shot setup (idempotent)
+#  LiveTalking — Vast.ai one-shot setup (idempotent, PRODUCTION 3-venv)
 #
-#  Chạy trên instance Vast sau khi git clone repo. An toàn để chạy lại nhiều
-#  lần (skip step đã xong).
+#  Architecture (1 instance, 3 venv, 3 process, ZERO pip/ABI conflict):
+#
+#    ┌──────────────────────────────────────────────────────────────┐
+#    │ venv_lmdeploy (torch 2.4 cu121 + lmdeploy 0.6.5)              │
+#    │   :23333 /v1/chat/completions  ← TTS backbone bfloat16 full   │
+#    └──────────────────────────────────────────────────────────────┘
+#                          ↓
+#    ┌──────────────────────────────────────────────────────────────┐
+#    │ venv_vieneu   (torch 2.6 cu124 + vieneu remote + neucodec)    │
+#    │   :23334 /infer_stream  ← codec decode tokens → PCM 24kHz     │
+#    └──────────────────────────────────────────────────────────────┘
+#                          ↓
+#    ┌──────────────────────────────────────────────────────────────┐
+#    │ venv_talking  (torch 2.4 cu121 + wav2lip + requests)          │
+#    │   :8010 /  ← web + avatar + wsstream                          │
+#    └──────────────────────────────────────────────────────────────┘
+#
+#  Lợi: max quality cả backbone (bfloat16, TTFB ~0.26s) lẫn codec (PyTorch
+#  full, zero rè/click). Mỗi venv giữ torch riêng → zero pip/ABI conflict.
 #
 #  Steps:
 #    1. apt deps (ffmpeg, build tools)
-#    2. Reuse /venv/main nếu Vast image đã có torch (skip 2.5GB download),
-#       else create fresh venv tại venv_talking/
-#    3. PyTorch + CUDA (auto-detect: Blackwell → cu128, Ada/Ampere → cu121)
-#    4. pip install -r requirements_vast.txt (slim, Aliyun mirror, prebuilt llama-cpp wheel)
-#    5. Verify torch.cuda
+#    2. venv_talking — reuse Vast template /opt/conda torch 2.4 hoặc tạo mới
+#    3. venv_lmdeploy — fresh venv + torch 2.4 cu121 + lmdeploy 0.6.5
+#    4. venv_vieneu — fresh venv + torch 2.6 cu124 + vieneu+neucodec
+#    5. Verify torch.cuda + imports cả 3 venv
 ###############################################################################
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 REPO_ROOT="$(pwd)"
 VENV_DIR="${REPO_ROOT}/venv_talking"
-# CUDA wheel index — chọn theo arch GPU (auto-detect):
-#   Blackwell (RTX 50xx, sm_120) → cu128
-#   Ada/Ampere/Hopper             → cu121 (ổn định nhất)
+VENV_LMDEPLOY_DIR="${REPO_ROOT}/venv_lmdeploy"
+VENV_VIENEU_DIR="${REPO_ROOT}/venv_vieneu"
+
 GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo unknown)"
 if echo "${GPU_NAME}" | grep -qE "RTX 50|GB200|B100|B200"; then
   TORCH_INDEX="https://download.pytorch.org/whl/cu128"
@@ -32,11 +48,8 @@ fi
 echo "[setup] GPU: ${GPU_NAME} → torch ${TORCH_TAG}"
 
 # ─── 1. System deps ─────────────────────────────────────────────────────────
-# KHÔNG install python3.X-dev/venv qua apt vì image base (pytorch/* hoặc
-# vastai/*) đã có Python qua conda hoặc /venv/main. Apt repo Ubuntu 22 không
-# có python3.12 → fail. Chỉ install system C libs + ffmpeg.
 if command -v apt-get >/dev/null 2>&1; then
-  echo "[setup] apt install system deps (skip Python — đã có sẵn trong image)..."
+  echo "[setup] apt install system deps..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq || true
   apt-get install -y -qq --no-install-recommends \
@@ -46,79 +59,113 @@ if command -v apt-get >/dev/null 2>&1; then
     libssl-dev || true
 fi
 
-# ─── 2. Python env detection ────────────────────────────────────────────────
-# Try pre-installed env theo thứ tự ưu tiên (skip torch download nếu match):
-#   1. /venv/main (Vast.AI vastai/pytorch template — torch thường 2.10/2.11)
-#   2. /opt/conda (pytorch/pytorch:*-cuda* Docker image — torch matches tag)
-#   3. Fallback: create fresh venv_talking + install torch riêng
+# ─── 2. venv_talking (wav2lip + web) ────────────────────────────────────────
 if [[ -f /venv/main/bin/python ]] && /venv/main/bin/python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
   PY_VER=$(/venv/main/bin/python -c "import torch; print(torch.__version__)")
-  echo "[setup] re-using Vast template venv at /venv/main (torch ${PY_VER} pre-installed)"
+  echo "[setup] venv_talking: re-using Vast /venv/main (torch ${PY_VER})"
   ln -sfn /venv/main "${VENV_DIR}"
 elif [[ -f /opt/conda/bin/python ]] && /opt/conda/bin/python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
   PY_VER=$(/opt/conda/bin/python -c "import torch; print(torch.__version__)")
-  echo "[setup] re-using pytorch/* conda env at /opt/conda (torch ${PY_VER} pre-installed)"
+  echo "[setup] venv_talking: re-using /opt/conda (torch ${PY_VER})"
   ln -sfn /opt/conda "${VENV_DIR}"
 else
   if [[ ! -d "${VENV_DIR}" ]]; then
-    echo "[setup] no pre-installed torch — creating fresh venv at ${VENV_DIR}..."
+    echo "[setup] venv_talking: no pre-installed torch — creating fresh..."
     python3 -m venv "${VENV_DIR}"
   fi
 fi
-# Conda env không có bin/activate kiểu venv. Add /opt/conda/bin vào PATH thay vì source activate.
 if [[ -L "${VENV_DIR}" && "$(readlink -f ${VENV_DIR})" == "/opt/conda" ]]; then
   export PATH="${VENV_DIR}/bin:${PATH}"
-  echo "[setup] PATH prefix → ${VENV_DIR}/bin (conda mode)"
 else
   # shellcheck disable=SC1090
   source "${VENV_DIR}/bin/activate"
 fi
 python -m pip install --upgrade pip setuptools wheel
 
-# ─── 3. PyTorch + CUDA ─────────────────────────────────────────────────────
-# Install torch CHỈ KHI venv chưa có (skip nếu Vast template đã có sẵn).
 if ! python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-  echo "[setup] installing torch from ${TORCH_INDEX}..."
+  echo "[setup] venv_talking: installing torch from ${TORCH_INDEX}..."
   pip install --index-url "${TORCH_INDEX}" torch torchvision torchaudio
 fi
 
-# ─── 4. requirements ─────────────────────────────────────────────────────
-# Ưu tiên requirements_vast.txt (slim — bỏ ~400MB deps không dùng) nếu có.
-# Aliyun mirror: ~10-50x nhanh hơn pypi từ instance LA HostPapa.
-# abetlen wheel index: prebuilt llama-cpp-python (vieneu turbo dep) → bỏ compile 5-10 min.
 REQ_FILE="scripts/vastai/requirements_vast.txt"
 [[ ! -f "${REQ_FILE}" ]] && REQ_FILE="requirements.txt"
-echo "[setup] pip install -r ${REQ_FILE} (Aliyun mirror + prebuilt llama-cpp wheel)"
+echo "[setup] venv_talking: pip install -r ${REQ_FILE}"
 pip install --no-cache-dir \
   -i https://mirrors.aliyun.com/pypi/simple/ \
   --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu/ \
   --extra-index-url https://pypi.org/simple/ \
   -r "${REQ_FILE}"
 
-# ─── 4b. lmdeploy (cho vieneu mode=gpu — chất lượng cao nhất, TurboMind GPU) ─
-# Vieneu gpu mode = spawn lmdeploy serve api_server local, dùng FlashAttn +
-# paged KV cache. Full bfloat16 (không quantize) → 0.26s first chunk + max
-# quality (không có click/rè như Q4 GGUF). Heavy install ~500MB nhưng worth.
-echo "[setup] installing lmdeploy (vieneu gpu mode backend)..."
-pip install --no-cache-dir lmdeploy || \
-  echo "[WARN] lmdeploy install failed — vieneu sẽ fallback standard/turbo mode"
-
-# Fallback: llama-cpp-python CUDA build (cho vieneu standard mode GGUF GPU,
-# dùng khi không muốn lmdeploy hoặc lmdeploy fail).
-echo "[setup] upgrading llama-cpp-python to CUDA build (cu121) — fallback cho standard mode..."
-pip install --no-cache-dir --force-reinstall --upgrade \
-  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121/ \
-  llama-cpp-python==0.3.16 || \
-  echo "[WARN] llama-cpp-python CUDA install failed"
-
-# numpy có thể bị bump >=2.0 → downgrade back để tương thích wav2lip
+# numpy có thể bị bump >=2.0 do dep tree → downgrade lại cho wav2lip
 pip install --no-cache-dir 'numpy<2.0' >/dev/null 2>&1 || true
 
-# ─── 5. Data dirs ──────────────────────────────────────────────────────────
-mkdir -p data/avatars data/uploads/raw data/uploads/jobs data/uploads/previews models
+# ─── 3. venv_lmdeploy (TTS backbone server, torch 2.4 cu121) ────────────────
+# Fresh venv vì lmdeploy 0.6.5 pin torch==2.4 — không thể share với venv_vieneu
+# (cần torch 2.6) hay venv_talking (có thể trên 2.4 nhưng KHÔNG muốn lmdeploy
+# kéo theo nó về sau khi update).
+PYBIN="$(command -v python3.11 || command -v python3.10 || command -v python3)"
+echo "[setup] venv_lmdeploy: using ${PYBIN}"
+if [[ ! -f "${VENV_LMDEPLOY_DIR}/bin/python" ]]; then
+  echo "[setup] creating fresh venv_lmdeploy at ${VENV_LMDEPLOY_DIR}..."
+  "${PYBIN}" -m venv --without-pip "${VENV_LMDEPLOY_DIR}" || \
+    "${PYBIN}" -m venv "${VENV_LMDEPLOY_DIR}"
+  if ! "${VENV_LMDEPLOY_DIR}/bin/python" -m pip --version >/dev/null 2>&1; then
+    "${VENV_LMDEPLOY_DIR}/bin/python" -m ensurepip --upgrade || \
+    curl -sS https://bootstrap.pypa.io/get-pip.py | "${VENV_LMDEPLOY_DIR}/bin/python"
+  fi
+fi
+PY_LMD="${VENV_LMDEPLOY_DIR}/bin/python"
+${PY_LMD} -m pip install --upgrade pip setuptools wheel
 
-# ─── 6. Download các model còn thiếu (wav2lip + musetalk + whisper) ────────
-# wav2lip.pth ưu tiên đã được SCP lên trước; nếu chưa có, thử HF mirror.
+# Torch 2.4 cu121 — bản lmdeploy 0.6.5 đã test stable
+if ! ${PY_LMD} -c "import torch; assert torch.__version__.startswith('2.4')" 2>/dev/null; then
+  echo "[setup] venv_lmdeploy: installing torch 2.4 cu121..."
+  ${PY_LMD} -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1
+fi
+
+echo "[setup] venv_lmdeploy: pip install -r scripts/vastai/requirements_lmdeploy.txt"
+${PY_LMD} -m pip install --no-cache-dir \
+  -i https://mirrors.aliyun.com/pypi/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  -r scripts/vastai/requirements_lmdeploy.txt
+
+# ─── 4. venv_vieneu (codec + vieneu remote client, torch 2.6 cu124) ─────────
+echo "[setup] venv_vieneu: using ${PYBIN}"
+if [[ ! -f "${VENV_VIENEU_DIR}/bin/python" ]]; then
+  echo "[setup] creating fresh venv_vieneu at ${VENV_VIENEU_DIR}..."
+  "${PYBIN}" -m venv --without-pip "${VENV_VIENEU_DIR}" || \
+    "${PYBIN}" -m venv "${VENV_VIENEU_DIR}"
+  if ! "${VENV_VIENEU_DIR}/bin/python" -m pip --version >/dev/null 2>&1; then
+    "${VENV_VIENEU_DIR}/bin/python" -m ensurepip --upgrade || \
+    curl -sS https://bootstrap.pypa.io/get-pip.py | "${VENV_VIENEU_DIR}/bin/python"
+  fi
+fi
+PY_VIENEU="${VENV_VIENEU_DIR}/bin/python"
+${PY_VIENEU} -m pip install --upgrade pip setuptools wheel
+
+# Torch 2.6 cu124 — neucodec PyTorch full quality cần >=2.5; torchao 0.13 hợp
+# torch 2.6 (0.14+ require torch._pytree.register_constant → torch 2.7+).
+VIENEU_TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+if echo "${GPU_NAME}" | grep -qE "RTX 50|GB200|B100|B200"; then
+  VIENEU_TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+fi
+if ! ${PY_VIENEU} -c "import torch; assert torch.cuda.is_available() and torch.__version__ >= '2.6'" 2>/dev/null; then
+  echo "[setup] venv_vieneu: installing torch from ${VIENEU_TORCH_INDEX}..."
+  ${PY_VIENEU} -m pip install --no-cache-dir --upgrade --index-url "${VIENEU_TORCH_INDEX}" \
+    torch torchvision torchaudio
+fi
+
+echo "[setup] venv_vieneu: pip install -r scripts/vastai/requirements_vieneu.txt"
+${PY_VIENEU} -m pip install --no-cache-dir \
+  -i https://mirrors.aliyun.com/pypi/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  -r scripts/vastai/requirements_vieneu.txt
+
+# ─── 5. Data dirs ──────────────────────────────────────────────────────────
+mkdir -p data/avatars data/uploads/raw data/uploads/jobs data/uploads/previews models logs
+
+# ─── 6. Download wav2lip.pth nếu thiếu ─────────────────────────────────────
 if [[ ! -f models/wav2lip.pth ]]; then
   echo "[setup] tải wav2lip.pth từ HF mirror..."
   wget -q --show-progress -O models/wav2lip.pth \
@@ -126,22 +173,34 @@ if [[ ! -f models/wav2lip.pth ]]; then
     || { rm -f models/wav2lip.pth; echo "[WARN] HF mirror fail — scp manual từ local"; }
 fi
 
-# musetalk/whisper chỉ cần nếu opt.model=musetalk (skip default wav2lip)
-# Để giảm setup time, KHÔNG tự pull. Chạy scripts/vastai/download_models.sh
-# riêng nếu cần musetalk.
-
-# ─── 7. Verify torch.cuda ──────────────────────────────────────────────────
+# ─── 7. Verify cả 3 venv ───────────────────────────────────────────────────
+echo "[verify] === venv_talking ==="
 python - <<'PY'
 import torch
-print(f"[verify] torch={torch.__version__}  cuda={torch.version.cuda}  available={torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    cap = torch.cuda.get_device_capability(0)
-    print(f"[verify] GPU={torch.cuda.get_device_name(0)}  sm_{cap[0]}{cap[1]}")
-else:
-    raise SystemExit("[ERROR] CUDA không khả dụng — torch wheel sai version")
+print(f"[talking] torch={torch.__version__}  cuda={torch.cuda.is_available()}  GPU={torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE'}")
+assert torch.cuda.is_available(), "CUDA không khả dụng trong venv_talking"
 PY
 
-# ─── 8. Sample products.json (cho demo brain) ──────────────────────────────
+echo "[verify] === venv_lmdeploy ==="
+"${VENV_LMDEPLOY_DIR}/bin/python" - <<'PY'
+import torch, lmdeploy
+print(f"[lmdeploy] torch={torch.__version__}  cuda={torch.cuda.is_available()}")
+print(f"[lmdeploy] lmdeploy={lmdeploy.__version__}")
+assert torch.cuda.is_available(), "CUDA không khả dụng trong venv_lmdeploy"
+PY
+
+echo "[verify] === venv_vieneu ==="
+"${VENV_VIENEU_DIR}/bin/python" - <<'PY'
+import torch
+print(f"[vieneu] torch={torch.__version__}  cuda={torch.cuda.is_available()}")
+import neucodec
+print("[vieneu] neucodec OK")
+import vieneu
+print(f"[vieneu] vieneu={getattr(vieneu, '__version__', '?')}")
+assert torch.cuda.is_available(), "CUDA không khả dụng trong venv_vieneu"
+PY
+
+# ─── 8. Sample products.json ───────────────────────────────────────────────
 if [[ ! -f data/products.json ]]; then
   cat > data/products.json <<'JSON'
 {
@@ -163,12 +222,16 @@ fi
 cat <<EOF
 
 ═══════════════════════════════════════════════════════════════════
- LiveTalking — Setup OK
+ LiveTalking — Setup OK  (PRODUCTION 3-venv)
 ═══════════════════════════════════════════════════════════════════
- Venv     : ${VENV_DIR}
- Torch    : ${TORCH_TAG}
- Activate : source ${VENV_DIR}/bin/activate
- Start    : bash scripts/vastai/start.sh
- Open     : http://\$PUBLIC_IPADDR:8010/  (port 8010 đã forward chưa?)
+ venv_lmdeploy : ${VENV_LMDEPLOY_DIR}  (torch 2.4 + lmdeploy 0.6.5)
+ venv_vieneu   : ${VENV_VIENEU_DIR}    (torch 2.6 + vieneu + neucodec)
+ venv_talking  : ${VENV_DIR}           (torch ${TORCH_TAG} + wav2lip)
+ Start         : bash scripts/vastai/start.sh
+ Stack         :
+   ├─ lmdeploy api_server → :23333  /v1  (LM backbone bfloat16)
+   ├─ vieneu_server.py    → :23334  /infer_stream  (codec PyTorch)
+   └─ app.py              → :8010   /  (web + avatar + wsstream)
+ Open          : http://\$PUBLIC_IPADDR:8010/
 ═══════════════════════════════════════════════════════════════════
 EOF

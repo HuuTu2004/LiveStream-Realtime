@@ -1,0 +1,13 @@
+{
+  "model_name": "vieneu",
+  "system": "",
+  "meta_instruction": "",
+  "eosys": "",
+  "user": "",
+  "eoh": "",
+  "assistant": "",
+  "eoa": "",
+  "separator": "",
+  "capability": "completion",
+  "stop_words": ["<|SPEECH_GENERATION_END|>", "<|endoftext|>"]
+}

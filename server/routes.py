@@ -70,13 +70,19 @@ async def human(request):
             # Ưu tiên brain đang chạy (đã có lịch sử + product context)
             from brain.brain_manager import get_brain
             brain = get_brain(sessionid)
+            opt = avatar_session.opt
+            llm_key = (getattr(opt, 'llm_api_key', '') or '').strip().lower()
             if brain is not None and brain._running:
                 asyncio.create_task(brain.speak(text, priority=True))
+            elif llm_key in ('', 'none'):
+                # Không có LLM key → fallback: gửi text thẳng vào TTS (echo).
+                # Tránh tình huống browser chat → 401 → TTS silent (bug đã gặp).
+                logger.info("[/human] no LLM key — fallback echo")
+                avatar_session.put_msg_txt(text, datainfo)
             else:
-                # Fallback: gọi LLM 1 lần qua brain.llm_client (không persist history)
+                # Có LLM key thật → gọi LLM 1 lần (không persist history)
                 from brain.llm_client import LLMClient
                 from brain.gesture_tagger import GestureTagger
-                opt = avatar_session.opt
                 client = LLMClient(
                     base_url=getattr(opt, 'llm_url', ''),
                     api_key=getattr(opt, 'llm_api_key', ''),
@@ -84,14 +90,18 @@ async def human(request):
                 )
 
                 async def _one_shot():
-                    tagger = GestureTagger()
-                    async for sent, info in tagger.feed_stream(client.stream(text, product=None)):
-                        if not sent:
-                            continue
-                        di = dict(datainfo)
-                        if info.get('gesture'):
-                            di['gesture'] = info['gesture']
-                        avatar_session.put_msg_txt(sent, di)
+                    try:
+                        tagger = GestureTagger()
+                        async for sent, info in tagger.feed_stream(client.stream(text, product=None)):
+                            if not sent:
+                                continue
+                            di = dict(datainfo)
+                            if info.get('gesture'):
+                                di['gesture'] = info['gesture']
+                            avatar_session.put_msg_txt(sent, di)
+                    except Exception as e:
+                        logger.warning(f"[/human] LLM stream failed: {e} — fallback echo")
+                        avatar_session.put_msg_txt(text, datainfo)
                 asyncio.create_task(_one_shot())
 
         return json_ok()

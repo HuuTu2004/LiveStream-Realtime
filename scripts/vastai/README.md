@@ -1,9 +1,31 @@
 # Deploy LiveTalking trên Vast.ai
 
-Quy trình deploy nhanh — ~10 phút từ instance mới đến server chạy.
+Quy trình deploy nhanh — ~10-15 phút từ instance mới đến server chạy.
 
 > **Transport hiện tại = `wsstream`** (MPEG-TS over WebSocket + JSMpeg). Chỉ cần
 > map TCP port 8010 — không cần UDP, không cần TURN server, bypass NAT hoàn toàn.
+
+> **TTS mặc định = `vieneu_http`** (production multi-venv).
+> `setup.sh` tạo 2 venv riêng biệt — `venv_talking` (torch 2.4 cho wav2lip)
+> và `venv_vieneu` (torch 2.6+ cho vieneu + lmdeploy). `start.sh` spawn
+> `vieneu_server.py` trước, đợi `/health` OK, rồi launch `app.py`.
+> ZERO pip conflict giữa wav2lip và vieneu codec — fix dứt điểm vấn đề
+> "rè/click/bật mất từ" do ONNX int8 codec.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Process A: vieneu_server.py  (venv_vieneu, torch 2.6+)       │
+│   listen 127.0.0.1:23334 /infer_stream                       │
+│   auto-spawn lmdeploy api_server :23333 (mode=gpu)           │
+└──────────────────────────────────────────────────────────────┘
+                          ↓ HTTP stream (length-prefixed f32le PCM 24kHz)
+┌──────────────────────────────────────────────────────────────┐
+│ Process B: app.py            (venv_talking, torch 2.4)       │
+│   tts/vieneu_http.py → POST :23334                           │
+│   wav2lip avatar pipeline + wsstream                         │
+│   listen 0.0.0.0:8010 /                                      │
+└──────────────────────────────────────────────────────────────┘
+```
 
 ## TL;DR
 
@@ -65,9 +87,10 @@ Script tự làm:
 3. SCP `models/wav2lip.pth` (~205MB) + `data/avatars/wav2lip256_avatar1/` (~363MB) lên instance.
 4. SSH chạy `scripts/vastai/setup.sh`:
    - Apt deps (ffmpeg, build tools)
-   - **Reuse /venv/main nếu Vast image đã có torch** (skip 2.5GB download)
-   - **pip install requirements_vast.txt** (slim, Aliyun mirror, prebuilt llama-cpp wheel) → ~3-5 phút thay vì 20-30 phút
-5. Verify `torch.cuda.is_available()` + GPU name + sm_xx.
+   - **`venv_talking`** — reuse /venv/main (Vast template) hoặc /opt/conda (pytorch image) nếu có torch sẵn; else create fresh. Pip install `requirements_vast.txt` (slim — chỉ aiohttp/wav2lip deps).
+   - **`venv_vieneu`** — luôn tạo fresh venv (cách ly torch 2.6+). Pip install `requirements_vieneu.txt` = `vieneu[gpu]` + `lmdeploy`.
+   - Aliyun mirror → ~5-10 phút total thay vì 30-40 phút.
+5. Verify `torch.cuda.is_available()` trên **cả 2 venv**.
 
 Flags hữu ích:
 
@@ -91,23 +114,25 @@ Server log → `server.log`. Truy cập admin tại `http://<PUBLIC_IPADDR>:8010
 ### Env vars override
 
 ```bash
-TTS_ENGINE=vieneu VIENEU_MODE=turbo \
+TTS_ENGINE=vieneu_http VIENEU_MODE=gpu \
 AVATAR_MODEL=wav2lip AVATAR_ID=wav2lip256_avatar1 \
 BRAIN_ENABLED=false \
 bash scripts/vastai/start.sh
 ```
 
-| Var               | Default                  | Ý nghĩa                                          |
-| ----------------- | ------------------------ | ------------------------------------------------ |
-| `AVATAR_MODEL`    | `wav2lip`                | `wav2lip` / `musetalk` / `ultralight`            |
-| `AVATAR_ID`       | `wav2lip256_avatar1`     | Folder trong `data/avatars/`                     |
-| `TTS_ENGINE`      | `vieneu`                 | `vieneu` (Apache 2.0, Vietnamese)                |
-| `VIENEU_MODE`     | `turbo`                  | `turbo` / `standard` / `gpu` (lmdeploy) / `remote` |
-| `TRANSPORT`       | `wsstream`               | `wsstream` / `virtualcam`                        |
-| `LISTEN_PORT`     | `8010`                   | HTTP + WebSocket port                            |
-| `BRAIN_ENABLED`   | `false`                  | Bật sales brain (cần LLM key)                    |
-| `OPENAI_API_KEY`  | —                        | LLM key cho brain                                |
-| `HF_TOKEN`        | —                        | Tăng rate limit khi pull VieNeu model HF         |
+| Var                | Default                  | Ý nghĩa                                          |
+| ------------------ | ------------------------ | ------------------------------------------------ |
+| `AVATAR_MODEL`     | `wav2lip`                | `wav2lip` / `musetalk` / `ultralight`            |
+| `AVATAR_ID`        | `wav2lip256_avatar1`     | Folder trong `data/avatars/`                     |
+| `TTS_ENGINE`       | `vieneu_http`            | `vieneu_http` (production multi-venv) / `vieneu` (in-process legacy) |
+| `VIENEU_MODE`      | `gpu`                    | `gpu` (lmdeploy bfloat16 — KHUYẾN NGHỊ) / `standard` / `turbo` |
+| `VIENEU_HTTP_PORT` | `23334`                  | Port vieneu_server.py listen                     |
+| `VIENEU_PORT`      | `23333`                  | Port LMDeploy backend bên trong venv_vieneu      |
+| `TRANSPORT`        | `wsstream`               | `wsstream` / `virtualcam`                        |
+| `LISTEN_PORT`      | `8010`                   | HTTP + WebSocket port (LiveTalking)              |
+| `BRAIN_ENABLED`    | `false`                  | Bật sales brain (cần LLM key)                    |
+| `OPENAI_API_KEY`   | —                        | LLM key cho brain                                |
+| `HF_TOKEN`         | —                        | Tăng rate limit khi pull VieNeu model HF         |
 
 ## 5. Test trong browser
 
@@ -159,19 +184,25 @@ pip install --index-url https://download.pytorch.org/whl/cu128 \
   --force-reinstall torch torchvision torchaudio
 ```
 
-### Muốn dùng vieneu_mode=gpu (lmdeploy TurboMind)
+### Muốn fallback in-process legacy (`TTS_ENGINE=vieneu`)
 
-LMDeploy tách khỏi core deps vì `lmdeploy[all]` force `torch<=2.10` (downgrade
-torch cu128 trên Blackwell). Mặc định `VIENEU_MODE=turbo` (0.3B model, không cần
-lmdeploy, chạy ngay).
-
-Nếu muốn thử gpu mode:
+Production mặc định là `vieneu_http` (2 venv tách biệt). Nếu muốn quay về
+legacy single-venv mode — chỉ debug, không khuyến nghị production:
 
 ```bash
 source venv_talking/bin/activate
-pip install lmdeploy  # KHÔNG dùng [all] để tránh torch downgrade
-VIENEU_MODE=gpu bash scripts/vastai/start.sh
+pip install vieneu[gpu] lmdeploy   # cài thẳng vào venv_talking (có thể conflict với wav2lip torch)
+TTS_ENGINE=vieneu VIENEU_MODE=gpu bash scripts/vastai/start.sh
 ```
+
+### `vieneu_server` chết khi start
+
+Check `logs/vieneu_server.log`. Lỗi thường gặp:
+
+- `OOM khi load model` — giảm `VIENEU_TP` hoặc dùng GPU ≥ 24GB VRAM.
+- `lmdeploy died early` — kiểm tra `nvidia-smi`, có process khác chiếm port 23333.
+- `Torch not compiled with CUDA enabled` — venv_vieneu cài sai torch index. Rerun
+  `setup.sh` (nó force reinstall torch theo arch).
 
 ### WSStream không lên frame trong browser
 

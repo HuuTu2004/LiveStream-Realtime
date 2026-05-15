@@ -1,6 +1,42 @@
 # LiveTalking Sales — Kiến trúc
 
-Digital-human livestream bán hàng tiếng Việt: avatar lip-sync + F5-TTS voice cloning + LLM sales brain + TikTok scraper, trong 1 process aiohttp.
+Digital-human livestream bán hàng tiếng Việt: avatar lip-sync (wav2lip) +
+VieNeu-TTS voice cloning + LLM sales brain + TikTok scraper.
+
+## Deploy topology — production multi-venv (1 instance, 2 process)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Vast.AI single GPU instance (RTX 3090/4090 24GB+)                  │
+│                                                                     │
+│  ┌───────────────────────────────────┐                              │
+│  │ venv_vieneu  (torch 2.6+ cu121)   │                              │
+│  │  • vieneu[gpu] (PyTorch neucodec) │  ← full quality, không      │
+│  │  • lmdeploy (TurboMind backend)   │    ONNX int8 → 0 rè/click   │
+│  │                                   │                              │
+│  │  scripts/vastai/vieneu_server.py  │                              │
+│  │   ├─ lmdeploy api_server :23333   │                              │
+│  │   └─ aiohttp /infer_stream :23334 │                              │
+│  └─────────────┬─────────────────────┘                              │
+│                │ HTTP stream  [4-byte BE len][f32le PCM 24kHz]      │
+│                │ chunks, terminator length=0                        │
+│                ▼                                                    │
+│  ┌───────────────────────────────────┐                              │
+│  │ venv_talking (torch 2.4 cu121)    │                              │
+│  │  • wav2lip + aiohttp + scipy      │                              │
+│  │  • tts/vieneu_http.py (requests)  │                              │
+│  │                                   │                              │
+│  │  app.py :8010                     │                              │
+│  │   ├─ /                  (web UI)  │                              │
+│  │   ├─ /human, /humanaudio …        │                              │
+│  │   └─ /wsstream/{sid}    (MPEG-TS) │  ← browser via TCP 8010      │
+│  └───────────────────────────────────┘                              │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Tại sao 2 venv: vieneu codec PyTorch full chất lượng cần torch ≥ 2.5 +
+transformers mới; wav2lip cần giữ torch 2.4 stable. Cài chung 1 venv =
+dep conflict liên tục. Tách = 0 conflict, mỗi process owns môi trường riêng.
 
 ## Folder layout
 
@@ -24,8 +60,8 @@ LiveTalking/
 │
 ├── tts/                        # 🎙️ TTS plugins
 │   ├── base_tts.py             # BaseTTS contract
-│   ├── vieneu.py               # VieNeu-TTS (DEFAULT — Apache 2.0, realtime CPU, voice clone 3-5s)
-│   └── f5tts.py                # F5-TTS (alternative — chất lượng cao hơn, CC-BY-NC-SA non-commercial)
+│   ├── vieneu_http.py          # DEFAULT — HTTP client → vieneu_server.py (production multi-venv)
+│   └── vieneu.py               # Legacy in-process VieNeu lib import (single-venv, hay conflict)
 │
 ├── streamout/                  # 📡 Output transports
 │   ├── base_output.py
@@ -76,9 +112,12 @@ LiveTalking/
 │       └── shared/             # api.js / toast.js / element.js (LiveElement base class)
 │
 ├── scripts/vastai/             # 🚀 Vast.AI deploy (KHÔNG cần Docker — Vast.AI đã là container)
-│   ├── setup.sh                # One-shot: deps + models download
+│   ├── setup.sh                # One-shot: tạo 2 venv (venv_talking + venv_vieneu)
+│   ├── requirements_vast.txt   # venv_talking deps (wav2lip + aiohttp + scipy)
+│   ├── requirements_vieneu.txt # venv_vieneu deps (vieneu[gpu] + lmdeploy)
+│   ├── vieneu_server.py        # HTTP server chạy trong venv_vieneu (port 23334)
+│   ├── start.sh                # Spawn vieneu_server → wait /health → launch app.py
 │   ├── download_models.sh      # Idempotent model fetcher
-│   ├── start.sh                # Production start (env-driven)
 │   └── onstart.sh              # Vast.AI On-start hook (clone + setup + start)
 │
 ├── data/                       # 💾 Runtime data (gitignored)

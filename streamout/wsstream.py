@@ -57,7 +57,10 @@ class WSStreamOutput(BaseOutput):
         self.fps = getattr(opt, 'fps', 25)
         # Bitrate tunable qua env (mpeg1 cần bitrate cao hơn h264 ~30%)
         self.video_bitrate = int(os.environ.get('WSSTREAM_VBITRATE', '1500000'))
-        self.audio_bitrate = int(os.environ.get('WSSTREAM_ABITRATE', '128000'))
+        # MP2 256kbps mono = near-transparent quality, đủ cho giọng nói.
+        # 128kbps default của MPEG-1 audio đôi khi để rè trên giọng Việt
+        # (do MP2 mask model không quen với tonal speech).
+        self.audio_bitrate = int(os.environ.get('WSSTREAM_ABITRATE', '256000'))
         self.sample_rate = 16000
         if parent and hasattr(parent, 'sample_rate'):
             self.sample_rate = parent.sample_rate
@@ -75,6 +78,13 @@ class WSStreamOutput(BaseOutput):
         self._audio_buf = np.empty(0, dtype=np.float32)
         self._silence_bytes = np.zeros(self._chunk_samples, dtype=np.float32).tobytes()
         self._audio_queue: queue.Queue = queue.Queue()
+        # Jitter absorption: short blocking grace để TTS thread "đuổi kịp" mỗi
+        # tick. Mặc định 12ms (~30% của 1 frame video 40ms) — đủ hấp thụ
+        # scheduling jitter của Python GIL + GPU inference batch boundary
+        # mà không trễ video.
+        self._audio_grace = float(os.environ.get('WSSTREAM_AUDIO_GRACE_MS', '12')) / 1000.0
+        # Đếm số tick chèn silence do underrun (debug)
+        self._audio_underruns = 0
 
         # WS clients — set of callbacks (each writes to 1 WebSocket).
         # Callbacks run on the ffmpeg reader thread → must schedule onto asyncio loop.
@@ -143,6 +153,10 @@ class WSStreamOutput(BaseOutput):
             '-c:a', 'mp2',
             '-b:a', str(self.audio_bitrate),
             '-ar', '44100',                      # MP2 chuẩn 44.1kHz
+            # High-quality internal resample 16k→44.1k bằng libsoxr + dither.
+            # ffmpeg mặc định dùng swr (lower-Q) → có thể tạo aliasing artifact
+            # nghe như "rè" trên giọng Việt giàu high-freq tonal content.
+            '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular_hp',
             # Mux ra MPEG-TS, push stdout
             '-f', 'mpegts',
             '-muxdelay', '0.001', '-muxpreload', '0.001',
@@ -314,10 +328,17 @@ class WSStreamOutput(BaseOutput):
     def _write_audio_chunk(self) -> None:
         if self._audio_sock is None:
             return
-        # Drain audio queue
+        # Drain queue có grace blocking — đợi TTS thread tối đa `_audio_grace`
+        # cho mỗi tick. Tránh chèn silence (= "tạch") khi queue chỉ trống tạm
+        # do scheduling jitter giữa các inference batch.
+        deadline = time.perf_counter() + self._audio_grace
         while self._audio_buf.size < self._chunk_samples:
+            timeout = deadline - time.perf_counter()
             try:
-                data = self._audio_queue.get_nowait()
+                if timeout > 0:
+                    data = self._audio_queue.get(timeout=timeout)
+                else:
+                    data = self._audio_queue.get_nowait()
             except queue.Empty:
                 break
             if data.size > 0:
@@ -328,10 +349,31 @@ class WSStreamOutput(BaseOutput):
             self._audio_buf = self._audio_buf[self._chunk_samples:]
         else:
             payload = self._silence_bytes
+            self._audio_underruns += 1
+            if self._audio_underruns % 25 == 1:
+                logger.warning(f"[WSStream] audio underrun #{self._audio_underruns} (queue starved >{int(self._audio_grace*1000)}ms)")
+        # DEBUG: dump exact bytes sent to ffmpeg socket (env-controlled)
+        if os.environ.get('WSSTREAM_AUDIO_DUMP'):
+            try:
+                if not hasattr(self, '_audio_dump') or self._audio_dump is None:
+                    dump_path = os.path.abspath('logs/ffmpeg_input_f32le_16k.bin')
+                    self._audio_dump = open(dump_path, 'wb')
+                    logger.info(f"[WSStream] DEBUG dump opened {dump_path} (size payload={len(payload)})")
+                self._audio_dump.write(payload)
+                self._audio_dump.flush()
+            except Exception as e:
+                logger.error(f"[WSStream] dump error: {e!r}")
         try:
             self._audio_sock.sendall(payload)
         except (BrokenPipeError, OSError, ConnectionResetError):
             pass
+
+    def get_buffer_size(self) -> int:
+        """Trả số VIDEO frames đang buffered (KHÔNG phải audio frames).
+        BaseAvatar.render() sleep `0.04 * size * 0.8` = 32ms/unit, formula
+        giả định unit = video frame (40ms). _audio_queue chứa 320-sample
+        push (= 20ms audio = 0.5 video frame). Phải chia 2 để unit khớp."""
+        return self._audio_queue.qsize() // 2
 
     def push_audio_frame(self, frame, eventpoint=None) -> None:
         if not isinstance(frame, np.ndarray):
