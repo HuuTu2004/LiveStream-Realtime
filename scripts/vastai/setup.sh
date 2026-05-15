@@ -32,15 +32,18 @@ fi
 echo "[setup] GPU: ${GPU_NAME} → torch ${TORCH_TAG}"
 
 # ─── 1. System deps ─────────────────────────────────────────────────────────
+# KHÔNG install python3.X-dev/venv qua apt vì image base (pytorch/* hoặc
+# vastai/*) đã có Python qua conda hoặc /venv/main. Apt repo Ubuntu 22 không
+# có python3.12 → fail. Chỉ install system C libs + ffmpeg.
 if command -v apt-get >/dev/null 2>&1; then
-  echo "[setup] apt install deps..."
+  echo "[setup] apt install system deps (skip Python — đã có sẵn trong image)..."
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
+  apt-get update -qq || true
   apt-get install -y -qq --no-install-recommends \
-    python3.12-dev python3.12-venv build-essential pkg-config \
+    build-essential pkg-config \
     git curl wget unzip \
     ffmpeg libsndfile1 libgl1 libglib2.0-0 \
-    libssl-dev
+    libssl-dev || true
 fi
 
 # ─── 2. Python env detection ────────────────────────────────────────────────
