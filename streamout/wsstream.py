@@ -156,20 +156,11 @@ class WSStreamOutput(BaseOutput):
         # Start stderr reader NGAY để thấy ffmpeg log + tránh pipe-full block
         threading.Thread(target=self._read_stderr, daemon=True, name='ws-stderr').start()
 
-        # Kick ffmpeg bằng 3 dummy frame qua stdin → ffmpeg sẽ init xong video
-        # input và move tới mở audio TCP listener. Không có kick này, ffmpeg
-        # block ở pipe:0 read (đợi data) và không mở audio listener.
-        try:
-            dummy = np.zeros((h, w, 3), dtype=np.uint8).tobytes()
-            for _ in range(3):
-                self._video_sock.write(dummy)
-            self._video_sock.flush()
-            logger.info("[WSStream] kicked ffmpeg with 3 dummy frames")
-        except Exception as e:
-            logger.error(f"[WSStream] kickstart write failed: {e}")
-            return
-
         # ─── Connect audio TCP với retry loop ───────────────────────────
+        # QUAN TRỌNG: start audio connect thread NGAY (trước khi ghi gì vào
+        # stdin). Lý do: RGB frame 576x768 = 1.3MB, stdin pipe buffer chỉ 64KB
+        # → write block tới khi ffmpeg drain. ffmpeg không drain video tới khi
+        # audio input mở xong → deadlock. Audio connect chạy song song unblock.
         def _connect_with_retry(port: int, name: str, max_wait: float = 20.0) -> Optional[socket.socket]:
             deadline = time.time() + max_wait
             last_err: Optional[Exception] = None
@@ -214,8 +205,8 @@ class WSStreamOutput(BaseOutput):
             return
 
         # stdout reader → broadcast mpegts chunks tới WS clients
+        # (stderr reader đã start ở trên — không duplicate)
         threading.Thread(target=self._read_stdout, daemon=True, name='ws-stdout').start()
-        threading.Thread(target=self._read_stderr, daemon=True, name='ws-stderr').start()
 
         self._starttime = time.perf_counter()
         self._totalframe = 0
