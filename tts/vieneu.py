@@ -209,7 +209,16 @@ class _VieNeuSingleton:
             if emotion:
                 kwargs["emotion"] = emotion
         else:
-            # standard — default GGUF+ONNX local (auto offload nếu llama-cpp build CUDA)
+            # standard — GGUF backbone + ONNX codec. Default backbone_device="cpu".
+            # Pass "cuda" + gguf_filename để force GGUF load qua llama-cpp-python
+            # CUDA build (cần LD_LIBRARY_PATH tới torch cuda libs).
+            # Repo VieNeu-TTS-v2 chứa cả full transformers + GGUF; vieneu auto-detect
+            # GGUF nếu `gguf_filename` được pass.
+            import torch as _torch
+            if _torch.cuda.is_available():
+                kwargs["backbone_device"] = "cuda"
+                kwargs["codec_device"] = "cuda"
+            kwargs["gguf_filename"] = "*.gguf"  # Q4_K_M variant inside VieNeu-TTS-v2 repo
             if emotion:
                 kwargs["emotion"] = emotion
 
