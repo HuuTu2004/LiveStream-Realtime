@@ -331,7 +331,17 @@ class VieNeuTTS(BaseTTS):
                         first_chunk_logged = True
 
                     pcm_16k = resampy.resample(pcm_24k, sr_orig=self.SR_NATIVE, sr_new=self.SR_TARGET)
-                    emit_buf = np.concatenate([emit_buf, pcm_16k]) if emit_buf.size else pcm_16k
+                    # Crossfade 4ms tại biên chunks để tránh tiếng "tạch" (clicks)
+                    # do resampy edge artifact + chunk boundary discontinuity.
+                    if emit_buf.size > 0 and pcm_16k.size > 64:
+                        fade_n = min(64, pcm_16k.size, emit_buf.size)  # ~4ms @ 16kHz
+                        fade_in = np.linspace(0.0, 1.0, fade_n, dtype=np.float32)
+                        fade_out = 1.0 - fade_in
+                        # Overlap-add: tail emit_buf fades out, head pcm_16k fades in, sum
+                        overlap = emit_buf[-fade_n:] * fade_out + pcm_16k[:fade_n] * fade_in
+                        emit_buf = np.concatenate([emit_buf[:-fade_n], overlap, pcm_16k[fade_n:]])
+                    else:
+                        emit_buf = np.concatenate([emit_buf, pcm_16k]) if emit_buf.size else pcm_16k
                     emit_buf = self._drain_buffer(emit_buf, text, textevent, first_chunk_logged)
             except Exception as e:
                 logger.exception(f"[VieNeu] stream error on sentence: {sentence[:40]!r}: {e}")
