@@ -135,6 +135,10 @@ class WSStreamOutput(BaseOutput):
             '-s', f'{w}x{h}', '-r', str(self.fps),
             '-thread_queue_size', '512',
             '-i', 'pipe:0',
+            # High-quality resampler input audio 16kHz → output 44.1kHz (MP2 chuẩn).
+            # Default `swr` resampler tạo aliasing rè khi upsample 2.75x.
+            # `soxr` (SoX resampler) precision 28-bit → clean smooth output.
+            '-af', 'aresample=resampler=soxr:precision=28:async=1000',
             # Encode: MPEG-1 video + MP2 audio (JSMpeg-compatible)
             '-c:v', 'mpeg1video',
             '-b:v', str(self.video_bitrate),
@@ -142,7 +146,7 @@ class WSStreamOutput(BaseOutput):
             '-g', str(self.fps),                 # keyframe mỗi 1s
             '-c:a', 'mp2',
             '-b:a', str(self.audio_bitrate),
-            '-ar', '44100',                      # MP2 likes 44.1kHz
+            '-ar', '44100',                      # MP2 chuẩn 44.1kHz
             # Mux ra MPEG-TS, push stdout
             '-f', 'mpegts',
             '-muxdelay', '0.001', '-muxpreload', '0.001',
@@ -196,11 +200,10 @@ class WSStreamOutput(BaseOutput):
                 return
             self._audio_sock = a
             logger.info("[WSStream] connected to ffmpeg (video=stdin, audio=tcp)")
-            # Pre-fill 2s silence để ffmpeg input audio không stall
-            try:
-                a.sendall(np.zeros(self.sample_rate * 2, dtype=np.float32).tobytes())
-            except Exception as e:
-                logger.warning(f"[WSStream] audio prefill failed: {e}")
+            # KHÔNG pre-fill silence — sẽ đẩy audio stream PTS lệch so với
+            # video PTS → lip-sync lệch chính xác = số giây prefill.
+            # Audio sẽ tự được fill silence chunk-by-chunk khi queue empty
+            # trong _write_audio_chunk (mỗi chunk 40ms cùng video frame).
 
         threading.Thread(target=_connect_audio, daemon=True, name='ws-connect-audio').start()
 
