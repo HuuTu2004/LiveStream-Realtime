@@ -307,51 +307,83 @@ class VieNeuTTS(BaseTTS):
             return
 
         start = time.perf_counter()
-        first_sentence = True
+        first_chunk_logged = False
+        # Buffer 16kHz samples xuyên-câu — emit ra avatar pipeline khi đủ self.chunk
+        emit_buf = np.empty(0, dtype=np.float32)
 
         for sent_idx, sentence in enumerate(sentences):
             if self.state != State.RUNNING:
                 break
+
+            is_last_sentence = (sent_idx == len(sentences) - 1)
             try:
-                audio = self._infer_one(sentence, voice_id, ref_audio, ref_text)
+                # Stream chunks 24kHz từ vieneu, resample → 16kHz, buffer + emit.
+                for pcm_24k in self._stream_one(sentence, voice_id, ref_audio, ref_text):
+                    if self.state != State.RUNNING:
+                        break
+                    if pcm_24k is None or len(pcm_24k) == 0:
+                        continue
+
+                    if not first_chunk_logged:
+                        logger.info(
+                            f"[VieNeu] Time to first chunk: {time.perf_counter() - start:.2f}s"
+                        )
+                        first_chunk_logged = True
+
+                    pcm_16k = resampy.resample(pcm_24k, sr_orig=self.SR_NATIVE, sr_new=self.SR_TARGET)
+                    emit_buf = np.concatenate([emit_buf, pcm_16k]) if emit_buf.size else pcm_16k
+                    emit_buf = self._drain_buffer(emit_buf, text, textevent, first_chunk_logged)
             except Exception as e:
-                logger.exception(f"[VieNeu] infer error on sentence: {sentence[:40]!r}: {e}")
-                continue
-            if audio is None or len(audio) == 0:
+                logger.exception(f"[VieNeu] stream error on sentence: {sentence[:40]!r}: {e}")
                 continue
 
-            if first_sentence:
-                logger.info(f"[VieNeu] Time to first chunk: {time.perf_counter()-start:.2f}s")
-
-            self._emit_chunks(
-                pcm_24k=audio,
-                text=text,
-                textevent=textevent,
-                is_first_sentence=first_sentence,
-                is_last_sentence=(sent_idx == len(sentences) - 1),
-            )
-            first_sentence = False
+            # Hết câu cuối → flush residual buffer + emit end marker
+            if is_last_sentence and self.state == State.RUNNING:
+                if emit_buf.size > 0:
+                    # Pad to chunk boundary
+                    pad = (self.chunk - emit_buf.size % self.chunk) % self.chunk
+                    if pad > 0:
+                        emit_buf = np.concatenate([emit_buf, np.zeros(pad, dtype=np.float32)])
+                    emit_buf = self._drain_buffer(emit_buf, text, textevent, True)
+                eventpoint = {"status": "end", "text": text}
+                if textevent:
+                    eventpoint.update(textevent)
+                self.parent.put_audio_frame(np.zeros(self.chunk, dtype=np.float32), eventpoint)
 
         logger.info(
-            f"[VieNeu] Total: {time.perf_counter()-start:.2f}s for {len(sentences)} sentence(s)"
+            f"[VieNeu] Total stream: {time.perf_counter() - start:.2f}s for {len(sentences)} sentence(s)"
         )
 
     # ------------------------------------------------------------------
-    def _infer_one(self, text: str, voice_id: str, ref_audio: str, ref_text: str) -> np.ndarray:
+    def _stream_one(self, text: str, voice_id: str, ref_audio: str, ref_text: str):
+        """Generator yielding pcm_24k chunks từ vieneu.infer_stream."""
         with self._infer_lock:
             kwargs = {"text": text}
             if voice_id:
                 kwargs["voice"] = self._singleton.get_preset_voice(voice_id)
             elif ref_audio and os.path.exists(ref_audio):
-                # Turbo mode (và gpu/remote chạy turbo backend) thường không cần ref_text
                 if self.mode in ("turbo",):
                     kwargs["voice"] = self._singleton.encode_reference(ref_audio)
                 else:
                     kwargs["ref_audio"] = ref_audio
                     if ref_text:
                         kwargs["ref_text"] = ref_text
-            audio = self._singleton.tts.infer(**kwargs)
-        return self._to_float32_mono(audio)
+            # vieneu.infer_stream là generator → yield chunk-by-chunk
+            for chunk in self._singleton.tts.infer_stream(**kwargs):
+                yield self._to_float32_mono(chunk)
+
+    def _drain_buffer(self, buf: np.ndarray, text: str, textevent: dict, started: bool) -> np.ndarray:
+        """Emit hết chunks (self.chunk samples) từ buf, return remainder."""
+        idx = 0
+        while buf.size - idx >= self.chunk and self.state == State.RUNNING:
+            eventpoint = {}
+            if started and idx == 0 and textevent:
+                # First emit của lần streaming này → carry textevent (vd gesture)
+                eventpoint = {"status": "start", "text": text}
+                eventpoint.update(textevent or {})
+            self.parent.put_audio_frame(buf[idx : idx + self.chunk], eventpoint)
+            idx += self.chunk
+        return buf[idx:] if idx > 0 else buf
 
     @staticmethod
     def _to_float32_mono(audio) -> np.ndarray:
@@ -367,32 +399,5 @@ class VieNeuTTS(BaseTTS):
             arr = arr[:, 0] if arr.shape[1] < arr.shape[0] else arr[0, :]
         return arr
 
-    # ------------------------------------------------------------------
-    def _emit_chunks(
-        self,
-        pcm_24k: np.ndarray,
-        text: str,
-        textevent: dict,
-        is_first_sentence: bool,
-        is_last_sentence: bool,
-    ) -> None:
-        stream = resampy.resample(pcm_24k, sr_orig=self.SR_NATIVE, sr_new=self.SR_TARGET)
-        streamlen = stream.shape[0]
-        idx = 0
-        first_chunk = True
-
-        while streamlen >= self.chunk and self.state == State.RUNNING:
-            eventpoint = {}
-            if first_chunk and is_first_sentence:
-                eventpoint = {"status": "start", "text": text}
-            if first_chunk and textevent:
-                eventpoint.update(textevent)
-            self.parent.put_audio_frame(stream[idx : idx + self.chunk], eventpoint)
-            streamlen -= self.chunk
-            idx += self.chunk
-            first_chunk = False
-
-        if is_last_sentence and self.state == State.RUNNING:
-            eventpoint = {"status": "end", "text": text}
-            eventpoint.update(textevent or {})
-            self.parent.put_audio_frame(np.zeros(self.chunk, dtype=np.float32), eventpoint)
+    # Legacy _emit_chunks removed — replaced by streaming _drain_buffer in
+    # txt_to_audio loop (see _stream_one + _drain_buffer above).
