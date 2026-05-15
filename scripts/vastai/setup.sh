@@ -43,20 +43,33 @@ if command -v apt-get >/dev/null 2>&1; then
     libssl-dev
 fi
 
-# ─── 2. Python venv ─────────────────────────────────────────────────────────
-# Vast.AI image (pytorch/* hoặc nvidia/cuda-*) thường có sẵn venv tại /venv/main
-# với torch + CUDA pre-installed. Re-use nếu có → tiết kiệm ~2.5GB torch download.
+# ─── 2. Python env detection ────────────────────────────────────────────────
+# Try pre-installed env theo thứ tự ưu tiên (skip torch download nếu match):
+#   1. /venv/main (Vast.AI vastai/pytorch template — torch thường 2.10/2.11)
+#   2. /opt/conda (pytorch/pytorch:*-cuda* Docker image — torch matches tag)
+#   3. Fallback: create fresh venv_talking + install torch riêng
 if [[ -f /venv/main/bin/python ]] && /venv/main/bin/python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-  echo "[setup] re-using Vast template venv at /venv/main (torch pre-installed)"
+  PY_VER=$(/venv/main/bin/python -c "import torch; print(torch.__version__)")
+  echo "[setup] re-using Vast template venv at /venv/main (torch ${PY_VER} pre-installed)"
   ln -sfn /venv/main "${VENV_DIR}"
+elif [[ -f /opt/conda/bin/python ]] && /opt/conda/bin/python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+  PY_VER=$(/opt/conda/bin/python -c "import torch; print(torch.__version__)")
+  echo "[setup] re-using pytorch/* conda env at /opt/conda (torch ${PY_VER} pre-installed)"
+  ln -sfn /opt/conda "${VENV_DIR}"
 else
   if [[ ! -d "${VENV_DIR}" ]]; then
-    echo "[setup] creating fresh venv at ${VENV_DIR}..."
+    echo "[setup] no pre-installed torch — creating fresh venv at ${VENV_DIR}..."
     python3 -m venv "${VENV_DIR}"
   fi
 fi
-# shellcheck disable=SC1090
-source "${VENV_DIR}/bin/activate"
+# Conda env không có bin/activate kiểu venv. Add /opt/conda/bin vào PATH thay vì source activate.
+if [[ -L "${VENV_DIR}" && "$(readlink -f ${VENV_DIR})" == "/opt/conda" ]]; then
+  export PATH="${VENV_DIR}/bin:${PATH}"
+  echo "[setup] PATH prefix → ${VENV_DIR}/bin (conda mode)"
+else
+  # shellcheck disable=SC1090
+  source "${VENV_DIR}/bin/activate"
+fi
 python -m pip install --upgrade pip setuptools wheel
 
 # ─── 3. PyTorch + CUDA ─────────────────────────────────────────────────────
