@@ -52,9 +52,11 @@ LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}"
 LLM_API_KEY="${OPENAI_API_KEY:-${LLM_API_KEY:-none}}"
 STUDIO_ENABLED="${STUDIO_ENABLED:-false}"
 
-# Default = standard (GGUF Q4_K_M GPU qua llama-cpp-python CUDA — chất lượng cao nhất,
-# streaming <300ms first chunk). Trước default 'turbo' = 0.3B CPU = chậm hơn.
-VIENEU_MODE="${VIENEU_MODE:-standard}"
+# Default = gpu (LMDeploy TurboMind, full bfloat16, FlashAttn + paged KV cache
+# — chất lượng cao nhất, không quantize → không có click/rè artifacts).
+# Cần: pip install lmdeploy (setup.sh tự cài), GPU >=20GB VRAM (RTX 3090+).
+# Fallback options nếu VRAM hạn chế: standard (Q4 GGUF, ~5GB VRAM) hoặc turbo (CPU).
+VIENEU_MODE="${VIENEU_MODE:-gpu}"
 VIENEU_EMOTION="${VIENEU_EMOTION:-natural}"
 VIENEU_VOICE_ID="${VIENEU_VOICE_ID:-}"
 VIENEU_PORT="${VIENEU_PORT:-23333}"

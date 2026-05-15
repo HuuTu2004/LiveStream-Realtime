@@ -206,6 +206,10 @@ class _VieNeuSingleton:
             kwargs["mode"] = "remote"
             kwargs["api_base"] = api_base
             kwargs["model_name"] = model_name
+            # Default codec_repo của remote mode là PyTorch distill-neucodec (cần
+            # vieneu[gpu] extras). Dùng ONNX int8 decoder để remote mode lightweight
+            # (chỉ ~50MB onnx, không cần install torch codec deps).
+            kwargs["codec_repo"] = "neuphonic/neucodec-onnx-decoder-int8"
             if emotion:
                 kwargs["emotion"] = emotion
         else:

@@ -95,14 +95,22 @@ pip install --no-cache-dir \
   --extra-index-url https://pypi.org/simple/ \
   -r "${REQ_FILE}"
 
-# ─── 4b. llama-cpp-python CUDA build (cho vieneu standard GGUF GPU offload) ─
-# Pip install ở trên dùng CPU wheel — GGUF chạy CPU = chậm. Upgrade sang CUDA
-# wheel để vieneu standard mode push GGUF lên GPU → 0.26s first chunk.
-echo "[setup] upgrading llama-cpp-python to CUDA build (cu121)..."
+# ─── 4b. lmdeploy (cho vieneu mode=gpu — chất lượng cao nhất, TurboMind GPU) ─
+# Vieneu gpu mode = spawn lmdeploy serve api_server local, dùng FlashAttn +
+# paged KV cache. Full bfloat16 (không quantize) → 0.26s first chunk + max
+# quality (không có click/rè như Q4 GGUF). Heavy install ~500MB nhưng worth.
+echo "[setup] installing lmdeploy (vieneu gpu mode backend)..."
+pip install --no-cache-dir lmdeploy || \
+  echo "[WARN] lmdeploy install failed — vieneu sẽ fallback standard/turbo mode"
+
+# Fallback: llama-cpp-python CUDA build (cho vieneu standard mode GGUF GPU,
+# dùng khi không muốn lmdeploy hoặc lmdeploy fail).
+echo "[setup] upgrading llama-cpp-python to CUDA build (cu121) — fallback cho standard mode..."
 pip install --no-cache-dir --force-reinstall --upgrade \
   --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121/ \
   llama-cpp-python==0.3.16 || \
-  echo "[WARN] llama-cpp-python CUDA install failed — vieneu sẽ chạy CPU mode"
+  echo "[WARN] llama-cpp-python CUDA install failed"
+
 # numpy có thể bị bump >=2.0 → downgrade back để tương thích wav2lip
 pip install --no-cache-dir 'numpy<2.0' >/dev/null 2>&1 || true
 
