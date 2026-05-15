@@ -89,10 +89,8 @@ CONFIG_SCHEMA: dict[str, dict] = {
 
     # ─── Server / Transport ────────────────────────────────────────
     "transport": {"type": "str", "group": "server", "restart": True,
-                  "choices": ["webrtc", "rtcpush", "rtmp", "virtualcam"],
-                  "description": "Output transport"},
-    "push_url": {"type": "str", "group": "server", "restart": True,
-                 "description": "URL push cho rtmp/rtcpush"},
+                  "choices": ["wsstream", "virtualcam"],
+                  "description": "Output transport (wsstream = MPEG-TS over WebSocket + JSMpeg)"},
     "listenport": {"type": "int", "group": "server", "restart": True,
                    "description": "HTTP port (default 8010)"},
     "max_session": {"type": "int", "group": "server", "restart": True,

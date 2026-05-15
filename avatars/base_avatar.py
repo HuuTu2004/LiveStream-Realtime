@@ -113,10 +113,8 @@ class BaseAvatar:
         self.tts = registry.create("tts", tts_name, opt=opt, parent=self)
 
         _output_modules = {
-            'webrtc': 'streamout.webrtc',
-            'rtcpush': 'streamout.webrtc',
-            'rtmp': 'streamout.rtmp',
-            'virtualcam': 'streamout.virtualcam'
+            'wsstream':   'streamout.wsstream',    # MPEG-TS over WS + JSMpeg (default — works behind any NAT)
+            'virtualcam': 'streamout.virtualcam',  # OS virtual camera (for OBS local)
         }
 
         # 初始化 Output 模块

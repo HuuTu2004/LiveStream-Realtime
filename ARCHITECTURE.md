@@ -29,9 +29,8 @@ LiveTalking/
 │
 ├── streamout/                  # 📡 Output transports
 │   ├── base_output.py
-│   ├── webrtc.py               # WebRTC peer (default for web viewer)
-│   ├── rtmp.py                 # RTMP push (TikTok/YouTube/SRS)
-│   └── virtualcam.py           # System virtual camera (OBS)
+│   ├── wsstream.py             # MPEG-TS over WebSocket + JSMpeg (DEFAULT — ~150ms, TCP-only)
+│   └── virtualcam.py           # System virtual camera (OBS local)
 │
 ├── brain/                      # 🧠 Sales brain
 │   ├── brain_manager.py        # Lifecycle: spawn LLM + script + comments
@@ -47,12 +46,10 @@ LiveTalking/
 │       └── linh_vi.py          # Persona Linh (Saigon Vietnamese)
 │
 ├── server/                     # 🌐 HTTP/WS routes (aiohttp)
-│   ├── routes.py               # /human /humanaudio /set_gesture /record /interrupt_talk
+│   ├── routes.py               # /human /humanaudio /set_gesture /record /interrupt_talk /wsstream/{sid}
 │   ├── brain_routes.py         # /brain/start /stop /comment /product/switch
 │   ├── live_routes.py          # /live/start /stop /state /feed (WS) — TikTok integration
 │   ├── config_routes.py        # /config GET/POST — dynamic settings
-│   ├── webrtc.py               # WebRTC offer/answer handler
-│   ├── rtc_manager.py          # PeerConnection registry
 │   └── session_manager.py      # Avatar session lifecycle
 │
 ├── studio/                     # 🛠️ Training portal (avatar/voice/gesture)
@@ -71,10 +68,12 @@ LiveTalking/
 │   ├── image.py                # read_imgs, mirror_index
 │   └── device.py               # CUDA/MPS init
 │
-├── web/                        # 🖥️ Frontend SPA (3 file, vanilla JS)
-│   ├── index.html              # Admin SPA — 5 tab (Live / Sản phẩm / Video / Âm thanh / Cài đặt)
-│   ├── studio.css
-│   └── studio.js               # WebRTC viewer + WS feed + CRUD + dynamic config
+├── web/                        # 🖥️ Frontend SPA (Web Components, vanilla JS, no build)
+│   ├── index.html              # Shell — chỉ <app-shell>
+│   ├── main.js                 # Entry — import 5 panel components
+│   ├── styles/                 # tokens / base / components / layout / live / jobs
+│   └── components/             # <app-shell> <live-panel> <product-panel> <video-panel> <audio-panel> <config-panel>
+│       └── shared/             # api.js / toast.js / element.js (LiveElement base class)
 │
 ├── scripts/vastai/             # 🚀 Vast.AI deploy (KHÔNG cần Docker — Vast.AI đã là container)
 │   ├── setup.sh                # One-shot: deps + models download
@@ -100,16 +99,23 @@ LiveTalking/
 
 ## Request flow
 
-### 1. WebRTC client xem avatar
+### 1. WSStream client xem avatar
 ```
-Browser → POST /offer → server/webrtc.py
-                     → RTCManager.handle_offer
-                     → session_manager.create_session()
-                     → build_avatar_session() → MuseTalk/Wav2Lip load
-                     → BaseAvatar.render() spawn 3 threads:
-                          • asr.run_step()          (audio feature)
-                          • inference()             (lip-sync diffusion)
-                          • process_frames()        (paste-back + push output)
+App startup → session '0' build + render thread spawn (continuous idle frames)
+            → WSStreamOutput spawns ffmpeg (mpeg1video + mp2 → mpegts → stdout)
+            → server reader thread cache chunks vào header_buf (ring buffer)
+
+Browser → JSMpeg.Player('ws://host:8010/wsstream/0')
+       → GET /wsstream/{sid} (WebSocket upgrade)
+         → server/routes.py: register_client(send_callback)
+           ├─ flush cached header chunks tới browser (PAT/PMT + recent keyframe)
+           └─ ffmpeg reader thread broadcast new chunks tới send_callback
+       → browser decode mpegts → canvas render + WebAudio playback
+
+BaseAvatar.render() (already running) spawns 3 threads:
+  • asr.run_step()       (audio feature)
+  • inference()          (lip-sync UNet)
+  • process_frames()     (paste-back + push to WSStreamOutput → ffmpeg)
 ```
 
 ### 2. Brain bán hàng (manual)
@@ -209,17 +215,18 @@ VieNeu GPU mode
 ## Tech stack
 
 - **Server**: Python 3.10+, aiohttp (single process)
-- **GPU**: PyTorch 2.3 + CUDA 12.1
+- **GPU**: PyTorch 2.4+ / CUDA 12.1 (Ada/Ampere) hoặc 12.8 (Blackwell)
 - **Avatar**: MuseTalk (Stable Diffusion based) / Wav2Lip (GAN-based) / Ultralight
-- **TTS** (default = VieNeu, fallback = F5):
-  - **VieNeu-TTS** `pnnbao-ump/VieNeu-TTS-v2` — Qwen2-based 0.6B LLM-style speech model, Apache 2.0, voice clone 3-5s
-    - GPU mode (default): backend **LMDeploy TurboMind** — plugin tự spawn local API server, connect qua remote client (max throughput nhờ FlashAttn + paged KV cache + tensor parallel)
-    - CPU mode: GGUF + ONNX
-  - **F5-TTS** `hynt/F5-TTS-Vietnamese-ViVoice` — Flow-matching diffusion, CC-BY-NC-SA (non-commercial), GPU-only
-- **LLM**: OpenAI-compatible API (GPT-4o / Ollama / vLLM / Vast.AI vLLM)
+- **TTS**: **VieNeu-TTS** `pnnbao-ump/VieNeu-TTS-v2` — Apache 2.0, voice clone 3-5s
+  - turbo (default): 0.3B GGUF, CPU/GPU, không cần lmdeploy
+  - standard: full GGUF + ONNX
+  - gpu / remote: LMDeploy TurboMind (max throughput, cần cài thêm lmdeploy)
+- **LLM**: OpenAI-compatible API (GPT-4o / Ollama / vLLM)
 - **Platform**: TikTokLive (websocket scraping)
-- **Output**: aiortc (WebRTC), python_rtmpstream (RTMP), pyvirtualcam
-- **Frontend**: Vanilla JS, no framework
+- **Output transports**:
+  - `wsstream` (default): ffmpeg → mpeg1video+mp2 → mpegts → aiohttp WebSocket → JSMpeg browser. Realtime ~150ms qua TCP, bypass NAT.
+  - `virtualcam`: pyvirtualcam (OBS local)
+- **Frontend**: Vanilla JS Web Components, no framework, no build step
 
 ## Deploy
 

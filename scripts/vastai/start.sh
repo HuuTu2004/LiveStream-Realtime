@@ -2,14 +2,16 @@
 ###############################################################################
 #  LiveTalking — production start trên Vast.ai (env-driven)
 #
-#  Yêu cầu: đã chạy scripts/vastai/setup.sh trước.
+#  Transport mặc định: wsstream (MPEG-TS over WebSocket + JSMpeg).
+#    - Chỉ cần TCP port 8010 → Vast.AI map sẵn, bypass NAT hoàn toàn.
+#    - Browser admin connect ws://<PUBLIC_IPADDR>:8010/wsstream/0
 #
 #  Env vars (đều có default an toàn):
 #    AVATAR_ID         (default: wav2lip256_avatar1)
 #    AVATAR_MODEL      wav2lip | musetalk | ultralight   (default: wav2lip)
 #    TTS_ENGINE        vieneu                              (default: vieneu)
-#    VIENEU_MODE       gpu | standard | turbo | remote    (default: gpu)
-#    TRANSPORT         webrtc | rtmp | virtualcam | rtcpush (default: webrtc)
+#    VIENEU_MODE       gpu | standard | turbo | remote    (default: turbo)
+#    TRANSPORT         wsstream | virtualcam              (default: wsstream)
 #    LISTEN_PORT       (default: 8010)
 #    BRAIN_ENABLED     true | false                       (default: false)
 #    OPENAI_API_KEY    (cho LLM brain)
@@ -23,7 +25,6 @@ cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
 VENV_DIR="${REPO_ROOT}/venv_talking"
 
-# Activate venv nếu chưa active
 if [[ -z "${VIRTUAL_ENV:-}" ]] && [[ -f "${VENV_DIR}/bin/activate" ]]; then
   # shellcheck disable=SC1090
   source "${VENV_DIR}/bin/activate"
@@ -32,7 +33,7 @@ fi
 AVATAR_ID="${AVATAR_ID:-wav2lip256_avatar1}"
 AVATAR_MODEL="${AVATAR_MODEL:-wav2lip}"
 TTS_ENGINE="${TTS_ENGINE:-vieneu}"
-TRANSPORT="${TRANSPORT:-webrtc}"
+TRANSPORT="${TRANSPORT:-wsstream}"
 LISTEN_PORT="${LISTEN_PORT:-8010}"
 BRAIN_ENABLED="${BRAIN_ENABLED:-false}"
 PRODUCTS_PATH="${PRODUCTS_PATH:-data/products.json}"
@@ -53,9 +54,8 @@ VIENEU_REF_AUDIO="${VIENEU_REF_AUDIO:-${VIENEU_REF_AUDIO_DEFAULT}}"
 VIENEU_REF_TEXT="${VIENEU_REF_TEXT:-}"
 [[ -z "${VIENEU_REF_TEXT}" && -f "${VIENEU_REF_TEXT_FILE}" ]] && VIENEU_REF_TEXT="$(cat "${VIENEU_REF_TEXT_FILE}")"
 
-# Sanity
 if [[ ! -d "data/avatars/${AVATAR_ID}" ]]; then
-  echo "[WARN] data/avatars/${AVATAR_ID} chưa có. Server vẫn start nhưng /offer sẽ fail."
+  echo "[WARN] data/avatars/${AVATAR_ID} chưa có — server start nhưng render thread sẽ fail."
   echo "       Upload avatar qua scp hoặc dùng Studio tab Video để preprocess."
 fi
 
@@ -86,10 +86,6 @@ if [[ "${TTS_ENGINE}" == "vieneu" ]]; then
   [[ -n "${VIENEU_REF_TEXT}" ]] && ARGS+=(--vieneu_ref_text "${VIENEU_REF_TEXT}")
   [[ "${VIENEU_MODE}" == "gpu" ]] && \
     echo "[start] VieNeu GPU mode — auto-spawn lmdeploy:${VIENEU_PORT} (lần đầu ~30-60s)"
-fi
-
-if [[ "${TRANSPORT}" == "rtmp" ]]; then
-  ARGS+=(--push_url "${RTMP_PUSH_URL:-rtmp://localhost/live/test}")
 fi
 
 echo "[start] python app.py ${ARGS[*]}"

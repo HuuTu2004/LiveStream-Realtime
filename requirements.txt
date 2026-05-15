@@ -7,7 +7,8 @@
 # ─── HTTP server + async ──────────────────────────────────────────────
 aiohttp>=3.9.0
 aiohttp_cors
-aiortc                      # WebRTC peer-to-peer
+# Transport = wsstream (MPEG-TS over WebSocket + JSMpeg trong browser).
+# WebRTC/aiortc đã loại bỏ — server chỉ serve TCP, bypass NAT trên Vast.AI.
 
 # ─── LLM brain (async OpenAI / Ollama / vLLM / Vast.AI) ───────────────
 openai>=1.40.0

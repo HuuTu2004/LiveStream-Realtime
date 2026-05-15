@@ -6,7 +6,7 @@
 #  lần (skip step đã xong).
 #
 #  Steps:
-#    1. apt deps (ffmpeg, build tools, libsrtp/opus/vpx cho aiortc)
+#    1. apt deps (ffmpeg, build tools — KHÔNG cần libsrtp/opus/vpx vì WebRTC đã loại bỏ)
 #    2. Python venv tại venv_talking/
 #    3. PyTorch + CUDA 12.8 (Blackwell sm_120 hỗ trợ — RTX 50xx)
 #    4. requirements.txt
@@ -39,7 +39,7 @@ if command -v apt-get >/dev/null 2>&1; then
     python3.12-dev python3.12-venv build-essential pkg-config \
     git curl wget unzip \
     ffmpeg libsndfile1 libgl1 libglib2.0-0 \
-    libopus-dev libvpx-dev libsrtp2-dev libssl-dev
+    libssl-dev
 fi
 
 # ─── 2. Python venv ─────────────────────────────────────────────────────────

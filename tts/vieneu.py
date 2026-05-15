@@ -195,7 +195,12 @@ class _VieNeuSingleton:
         self.mode = mode
         kwargs: dict = {}
         if mode == "turbo":
+            # CPU GGUF or CPU+GPU offload via llama-cpp-python n_gpu_layers
             kwargs["mode"] = "turbo"
+        elif mode == "turbo_gpu":
+            # Native torch+transformers GPU — nhanh hơn turbo (gguf) khi có GPU mạnh
+            kwargs["mode"] = "turbo_gpu"
+            kwargs["device"] = "cuda"
         elif mode in ("remote", "gpu"):
             # gpu = remote + auto-spawn lmdeploy (đã xử lý trước khi gọi class này)
             kwargs["mode"] = "remote"
@@ -204,7 +209,7 @@ class _VieNeuSingleton:
             if emotion:
                 kwargs["emotion"] = emotion
         else:
-            # standard — default GGUF+ONNX local
+            # standard — default GGUF+ONNX local (auto offload nếu llama-cpp build CUDA)
             if emotion:
                 kwargs["emotion"] = emotion
 

@@ -1,0 +1,133 @@
+/* Design tokens — refined dark theme (Linear-style)
+ * Single source of truth for colors, spacing, typography, motion.
+ * Toggle theme by setting data-theme="light" on <html> (chuẩn bị cho v2 sau).
+ */
+
+:root {
+  /* ─── Color ─ Surfaces (Premium Dark with Glassmorphism readiness) ────────────────────────────────────── */
+  --bg-base:        #000000; /* Deep black for true contrast */
+  --bg-gradient:    radial-gradient(circle at top left, #1c0e3a, #000000 40%), radial-gradient(circle at bottom right, #05263d, #000000 50%);
+  --bg-canvas:      rgba(255, 255, 255, 0.02);
+  --bg-elevated:    rgba(255, 255, 255, 0.04);
+  --bg-overlay:     rgba(255, 255, 255, 0.08);
+  --bg-hover:       rgba(255, 255, 255, 0.12);
+
+  /* Glassmorphism settings */
+  --glass-blur:     blur(24px);
+  --glass-border:   rgba(255, 255, 255, 0.08);
+  --glass-highlight: rgba(255, 255, 255, 0.15);
+
+  /* ─── Color ─ Borders ─────────────────────────────────────── */
+  --border-subtle:  rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-strong:  rgba(255, 255, 255, 0.2);
+  --border-focus:   #7b61ff;
+
+  /* ─── Color ─ Text ────────────────────────────────────────── */
+  --text-strong:    #ffffff;
+  --text-default:   #e2e8f0;
+  --text-soft:      #cbd5e1;
+  --text-muted:     #94a3b8;
+  --text-faint:     #64748b;
+  --text-disabled:  #475569;
+
+  /* ─── Color ─ Accent / Semantic (Vibrant) ───────────────────────────── */
+  --accent:         #7b61ff; /* Vibrant Purple/Indigo */
+  --accent-hover:   #9a86ff;
+  --accent-dim:     #4c36b8;
+  --accent-soft:    rgba(123, 97, 255, 0.15);
+  --accent-ring:    rgba(123, 97, 255, 0.4);
+  --accent-glow:    0 0 20px rgba(123, 97, 255, 0.6);
+
+  --accent-secondary:#00d4ff; /* Cyan */
+  --accent-secondary-glow: 0 0 20px rgba(0, 212, 255, 0.6);
+
+  --success:        #10b981;
+  --success-soft:   rgba(16, 185, 129, 0.15);
+  --success-glow:   0 0 16px rgba(16, 185, 129, 0.4);
+
+  --warning:        #f59e0b;
+  --warning-soft:   rgba(245, 158, 11, 0.15);
+
+  --danger:         #ef4444;
+  --danger-hover:   #f87171;
+  --danger-soft:    rgba(239, 68, 68, 0.15);
+  --danger-glow:    0 0 16px rgba(239, 68, 68, 0.4);
+
+  --info:           #3b82f6;
+  --purple:         #d946ef;
+  --gift:           #f59e0b;
+
+  /* ─── Typography ──────────────────────────────────────────── */
+  --font-sans:      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-heading:   "Outfit", "Inter", sans-serif;
+  --font-mono:      "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-2xs:       11px;
+  --text-xs:        12px;
+  --text-sm:        13px;
+  --text-base:      14px;
+  --text-md:        16px;
+  --text-lg:        18px;
+  --text-xl:        22px;
+  --text-2xl:       28px;
+  --text-3xl:       36px;
+
+  --leading-tight:  1.2;
+  --leading-snug:   1.35;
+  --leading-normal: 1.6;
+
+  /* ─── Spacing (4px scale) ─────────────────────────────────── */
+  --space-1:        4px;
+  --space-2:        8px;
+  --space-3:        12px;
+  --space-4:        16px;
+  --space-5:        20px;
+  --space-6:        24px;
+  --space-7:        32px;
+  --space-8:        48px;
+  --space-9:        64px;
+
+  /* ─── Radius ──────────────────────────────────────────────── */
+  --radius-xs:      4px;
+  --radius-sm:      8px;
+  --radius-md:      12px;
+  --radius-lg:      16px;
+  --radius-xl:      24px;
+  --radius-pill:    9999px;
+
+  /* ─── Shadow ──────────────────────────────────────────────── */
+  --shadow-sm:      0 2px 4px rgba(0, 0, 0, 0.4);
+  --shadow-md:      0 8px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg:      0 16px 32px rgba(0, 0, 0, 0.6);
+  --shadow-ring:    0 0 0 3px var(--accent-ring);
+  --shadow-glass:   inset 0 1px 1px rgba(255, 255, 255, 0.15), 0 8px 32px rgba(0, 0, 0, 0.4);
+
+  /* ─── Motion ──────────────────────────────────────────────── */
+  --duration-fast:  150ms;
+  --duration-base:  250ms;
+  --duration-slow:  400ms;
+  --ease-out:       cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out:    cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring:    cubic-bezier(0.175, 0.885, 0.32, 1.275);
+
+  /* ─── Z-index ─────────────────────────────────────────────── */
+  --z-dropdown:     100;
+  --z-sticky:       200;
+  --z-modal:        1000;
+  --z-toast:        2000;
+
+  /* ─── Layout ──────────────────────────────────────────────── */
+  --topbar-height:  64px;
+  --sidebar-width:  260px;
+  --content-max:    1400px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

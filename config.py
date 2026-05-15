@@ -61,11 +61,13 @@ def parse_args():
 
     # ─── VieNeu-TTS (Vietnamese, realtime, Apache 2.0) ─────────────────
     parser.add_argument('--vieneu_mode', type=str, default='turbo',
-                        choices=['gpu', 'standard', 'turbo', 'remote'],
-                        help="VieNeu mode: turbo (DEFAULT — 0.3B 2x faster CPU/GPU, không cần lmdeploy) | "
-                             "standard (GGUF+ONNX local, chất lượng cao) | gpu (tự spawn lmdeploy, "
-                             "cần cài lmdeploy riêng — chưa stable trên Blackwell sm_120) | "
-                             "remote (external lmdeploy)")
+                        choices=['gpu', 'standard', 'turbo', 'turbo_gpu', 'remote'],
+                        help="VieNeu mode: turbo (DEFAULT — 0.3B GGUF, llama.cpp CPU/GPU) | "
+                             "turbo_gpu (transformers native GPU, NHANH NHẤT nếu có CUDA — "
+                             "khuyến nghị cho RTX 4090) | "
+                             "standard (full model GGUF+ONNX, chất lượng cao) | "
+                             "gpu (lmdeploy TurboMind — cần cài lmdeploy riêng) | "
+                             "remote (external lmdeploy server)")
     parser.add_argument('--vieneu_emotion', type=str, default='natural',
                         choices=['natural', 'storytelling'],
                         help="VieNeu emotion preset")
@@ -85,16 +87,15 @@ def parse_args():
                         help="(gpu mode) Tensor parallel size (1 GPU = 1; 2 GPU = 2)")
 
     # ─── 传输 ─────────────────────────────────────────────────────────
-    parser.add_argument('--transport', type=str, default='webrtc',
-                        help="output: rtcpush/webrtc/rtmp/virtualcam")
-    parser.add_argument('--push_url', type=str,
-                        default='http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream')
+    parser.add_argument('--transport', type=str, default='wsstream',
+                        choices=['wsstream', 'virtualcam'],
+                        help="output transport: "
+                             "wsstream = MPEG-TS over WebSocket + JSMpeg (default, "
+                             "realtime ~150ms qua TCP, bypass NAT trên Vast.AI); "
+                             "virtualcam = OS virtual camera cho OBS local")
     parser.add_argument('--max_session', type=int, default=1)
     parser.add_argument('--listenport', type=int, default=8010,
                         help="web listen port")
-    # WebRTC NAT/ICE tự dò qua env vars khi cần: PUBLIC_IPADDR (Vast.ai inject
-    # sẵn) hoặc RTC_PUBLIC_IP; TURN_URL/TURN_USER/TURN_PASS nếu cần TURN.
-    # Local dev: không cần set gì cả. Xem server/rtc_manager.py.
 
     # ─── LLM ───────────────────────────────────────────────────────────
     parser.add_argument('--llm_url', type=str, default='http://localhost:11434/v1',

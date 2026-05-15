@@ -212,6 +212,53 @@ async def is_speaking(request):
     return json_ok(data=avatar_session.is_speaking())
 
 
+# ─── WSStream playback (MPEG-TS over WebSocket → JSMpeg) ──────────────────
+
+async def wsstream(request):
+    """WebSocket endpoint cho transport=wsstream.
+
+    Client (JSMpeg) connect → server đăng ký callback push MPEG-TS chunks.
+    Callback chạy trên ffmpeg reader thread → dùng run_coroutine_threadsafe
+    để đẩy bytes xuống WS qua asyncio loop.
+    """
+    sessionid = request.match_info.get('sessionid', '0')
+    avatar_session = get_session(request, sessionid)
+    if avatar_session is None:
+        return web.Response(status=404, text=f"session {sessionid} not found")
+
+    output = getattr(avatar_session, 'output', None)
+    # Duck-type check — không import wsstream để tránh circular
+    if not (output and hasattr(output, 'register_client') and hasattr(output, 'unregister_client')):
+        return web.Response(
+            status=400,
+            text=f"session {sessionid} không dùng transport=wsstream (output={type(output).__name__})",
+        )
+
+    ws = web.WebSocketResponse(max_msg_size=0, autoping=True, heartbeat=30)
+    await ws.prepare(request)
+    logger.info(f"[wsstream] client connect sessionid={sessionid}")
+
+    loop = asyncio.get_event_loop()
+
+    def send_callback(chunk: bytes) -> None:
+        """Gọi từ ffmpeg reader thread — schedule send_bytes qua asyncio loop."""
+        if ws.closed:
+            raise ConnectionError("ws closed")
+        # Fire-and-forget — không await (sẽ block ffmpeg reader nếu await)
+        asyncio.run_coroutine_threadsafe(ws.send_bytes(chunk), loop)
+
+    output.register_client(send_callback)
+    try:
+        # Giữ WS mở cho tới khi client close. Không nhận gì từ client (one-way).
+        async for msg in ws:
+            if msg.type == web.WSMsgType.CLOSE or msg.type == web.WSMsgType.ERROR:
+                break
+    finally:
+        output.unregister_client(send_callback)
+        logger.info(f"[wsstream] client disconnect sessionid={sessionid}")
+    return ws
+
+
 # ─── 路由注册 ──────────────────────────────────────────────────────────────
 
 def setup_routes(app):
@@ -224,5 +271,6 @@ def setup_routes(app):
     app.router.add_post("/record", record)
     app.router.add_post("/interrupt_talk", interrupt_talk)
     app.router.add_post("/is_speaking", is_speaking)
+    app.router.add_get("/wsstream/{sessionid}", wsstream)
     # NOTE: static '/' route phải đặt CUỐI cùng — không thì sẽ swallow các path khác
     # đăng ký sau (vd /studio/* ở studio.routes). Để studio_routes tự add prefix riêng.
