@@ -1,4 +1,5 @@
-// <product-panel> — Product CRUD (table + modal form).
+// <product-panel> — Product CRUD tối giản: chỉ Tên + Mô tả text.
+// User paste full text bất kỳ ngành hàng, LLM brain xử lý trực tiếp.
 
 import { LiveElement } from "./shared/element.js";
 import { api, escapeHtml, escapeAttr } from "./shared/api.js";
@@ -13,62 +14,64 @@ class ProductPanel extends LiveElement {
   render() {
     this.innerHTML = `
       <div class="panel-head">
-        <h2>Sản phẩm</h2>
-        <div class="btn-row">
+        <div class="title-block">
+          <h2>Sản phẩm</h2>
+          <div class="subtitle">
+            Nhập tên + paste mô tả đầy đủ (giá, màu, size, thành phần, FAQ, USP…). LLM nhận nguyên gốc — quần áo, điện tử, mỹ phẩm, F&amp;B, dịch vụ đều dùng được.
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn-secondary" id="btn-import-json">⇡ Import JSON</button>
           <button id="btn-new-product" class="btn-primary">+ Thêm sản phẩm</button>
-          <button class="btn-secondary" id="btn-import-json">Import JSON</button>
           <input type="file" id="import-file" accept=".json,application/json" hidden />
         </div>
       </div>
-      <p class="hint">CRUD đầy đủ cho bất kỳ mặt hàng nào (quần áo, điện tử, mỹ phẩm, thực phẩm, dịch vụ). Schema linh hoạt — chỉ <code>id</code> bắt buộc.</p>
 
-      <table class="data-table" id="products-table">
-        <thead><tr><th>ID</th><th>Tên</th><th>Giá</th><th>Mô tả</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="card" style="padding:0">
+        <div class="table-wrap">
+          <table class="data-table" id="products-table">
+            <thead>
+              <tr>
+                <th style="width:140px">ID</th>
+                <th style="width:240px">Tên</th>
+                <th>Mô tả</th>
+                <th style="width:140px"></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="products-empty" class="empty-state" hidden>
+          <span class="empty-icon">📦</span>
+          Chưa có sản phẩm nào. Nhấn <b>Thêm sản phẩm</b> hoặc <b>Import JSON</b> để bắt đầu.
+        </div>
+      </div>
 
-      <div class="modal" id="product-modal">
-        <div class="modal-body">
+      <div class="modal" id="product-modal" aria-hidden="true">
+        <div class="modal-body" role="dialog" aria-modal="true" aria-labelledby="product-modal-title">
           <header>
             <h3 id="product-modal-title">Sản phẩm</h3>
-            <button class="modal-close" data-close>&times;</button>
+            <button class="modal-close" data-close aria-label="Đóng">&times;</button>
           </header>
           <form id="product-form">
-            <div class="grid-2">
-              <label>ID (bắt buộc, unique)
-                <input type="text" name="id" required pattern="[a-zA-Z0-9_\\-\\.]+" />
+            <label>Tên sản phẩm (để dễ chọn / xem)
+              <input type="text" name="name" required placeholder="vd: Áo thun cotton mùa hè 2024" />
+            </label>
+            <label>Mô tả đầy đủ
+              <textarea name="text" rows="14" required
+                placeholder="Paste mọi thông tin: giá, màu, size, chất liệu, USP, FAQ, hướng dẫn bảo quản, chính sách đổi trả, mã giảm giá… Càng chi tiết LLM tư vấn càng chuẩn."></textarea>
+            </label>
+            <details class="adv-row">
+              <summary class="muted" style="cursor:pointer;padding:var(--space-2) 0">Tùy chỉnh ID (mặc định tự sinh)</summary>
+              <label>ID (a-z, 0-9, _, -, .)
+                <input type="text" name="id" pattern="[a-zA-Z0-9_\\-\\.]+" placeholder="để trống = auto" />
               </label>
-              <label>Tên
-                <input type="text" name="name" />
-              </label>
-              <label>Giá
-                <input type="text" name="price" placeholder="vd: 299.000đ / $50 / liên hệ" />
-              </label>
-              <label>Danh mục
-                <input type="text" name="category" placeholder="vd: thời trang, điện tử…" />
-              </label>
-              <label class="span-2">Mô tả
-                <textarea name="description" rows="3"></textarea>
-              </label>
-              <label class="span-2">Ảnh URL hoặc đường dẫn
-                <input type="text" name="image_url" placeholder="https://… hoặc data/images/x.jpg" />
-              </label>
-            </div>
-
-            <h4>Thuộc tính tùy chỉnh <button type="button" class="btn-small" id="attr-add">+</button></h4>
-            <div id="attrs-editor" class="kv-editor"></div>
-
-            <h4>Điểm bán (mỗi dòng 1 ý) <button type="button" class="btn-small" id="sp-add">+</button></h4>
-            <div id="sp-editor" class="list-editor"></div>
-
-            <h4>FAQ (Hỏi → Đáp) <button type="button" class="btn-small" id="faq-add">+</button></h4>
-            <div id="faq-editor" class="kv-editor"></div>
-
-            <div class="modal-footer">
-              <button type="submit">Lưu</button>
-              <button type="button" class="btn-secondary" data-close>Hủy</button>
-            </div>
+            </details>
           </form>
+          <div class="modal-footer">
+            <button type="button" class="btn-secondary" data-close>Hủy</button>
+            <button type="submit" form="product-form" class="btn-primary">Lưu</button>
+          </div>
         </div>
       </div>
     `;
@@ -84,32 +87,34 @@ class ProductPanel extends LiveElement {
         this.$("#product-modal").classList.remove("open");
       }
     });
-    this.on("#attr-add", "click", () => this._addKv(this.$("#attrs-editor"), "", ""));
-    this.on("#sp-add",   "click", () => this._addList(this.$("#sp-editor"), ""));
-    this.on("#faq-add",  "click", () => this._addKv(this.$("#faq-editor"), "", ""));
     this.on("#product-form", "submit", (e) => this._save(e));
   }
 
-  afterMount() {
-    this.refresh();
-  }
-
-  onActivate() {
-    this.refresh();
-  }
+  afterMount() { this.refresh(); }
+  onActivate() { this.refresh(); }
 
   async refresh() {
     const j = await api("/studio/products");
     const tb = this.$("#products-table tbody");
+    const empty = this.$("#products-empty");
+    const table = this.$("#products-table");
     tb.innerHTML = "";
     if (j.code !== 0) return;
-    for (const p of j.data.products || []) {
+    const list = j.data.products || [];
+    if (!list.length) {
+      empty.hidden = false;
+      table.style.display = "none";
+      return;
+    }
+    empty.hidden = true;
+    table.style.display = "";
+    for (const p of list) {
+      const text = p.text || p.description || "";
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td><code>${escapeHtml(p.id || "")}</code></td>
         <td>${escapeHtml(p.name || "—")}</td>
-        <td>${escapeHtml(p.price || "")}</td>
-        <td>${escapeHtml((p.description || "").substring(0, 80))}${(p.description || "").length > 80 ? "…" : ""}</td>
+        <td class="subtle">${escapeHtml(text.substring(0, 140))}${text.length > 140 ? "…" : ""}</td>
         <td class="actions">
           <button class="btn-small" data-edit="${escapeAttr(p.id)}">Sửa</button>
           <button class="btn-small btn-danger" data-del="${escapeAttr(p.id)}">Xóa</button>
@@ -146,9 +151,6 @@ class ProductPanel extends LiveElement {
     this._editingId = pid;
     const form = this.$("#product-form");
     form.reset();
-    this.$("#attrs-editor").innerHTML = "";
-    this.$("#sp-editor").innerHTML = "";
-    this.$("#faq-editor").innerHTML = "";
 
     let p = {};
     if (pid) {
@@ -159,66 +161,48 @@ class ProductPanel extends LiveElement {
       this.$("#product-modal-title").textContent = "Sản phẩm mới";
     }
 
-    for (const k of ["id", "name", "price", "description", "image_url", "category"]) {
-      if (form[k]) form[k].value = p[k] || "";
-    }
-    const attrs = { ...(p.attributes || {}) };
-    if (p.colors)   attrs["Màu sắc"]   = Array.isArray(p.colors)   ? p.colors.join(", ")   : p.colors;
-    if (p.sizes)    attrs["Kích cỡ"]   = Array.isArray(p.sizes)    ? p.sizes.join(", ")    : p.sizes;
-    if (p.material) attrs["Chất liệu"] = p.material;
-    for (const [k, v] of Object.entries(attrs)) {
-      this._addKv(this.$("#attrs-editor"), k, Array.isArray(v) ? v.join(", ") : v);
-    }
-    for (const s of p.selling_points || []) this._addList(this.$("#sp-editor"), s);
-    for (const [q, a] of Object.entries(p.faq || {})) this._addKv(this.$("#faq-editor"), q, a);
+    if (form.id)   form.id.value   = p.id   || "";
+    if (form.name) form.name.value = p.name || "";
+    if (form.text) form.text.value = p.text || this._legacyToText(p);
 
     this.$("#product-modal").classList.add("open");
   }
 
-  _addKv(root, k, v) {
-    const row = document.createElement("div");
-    row.className = "kv-row";
-    row.innerHTML = `
-      <input type="text" placeholder="key" value="${escapeAttr(k)}" />
-      <input type="text" placeholder="value" value="${escapeAttr(v)}" />
-      <button type="button">×</button>`;
-    row.querySelector("button").onclick = () => row.remove();
-    root.appendChild(row);
-  }
-  _addList(root, v) {
-    const row = document.createElement("div");
-    row.className = "list-row";
-    row.innerHTML = `<input type="text" value="${escapeAttr(v)}" /><button type="button">×</button>`;
-    row.querySelector("button").onclick = () => row.remove();
-    root.appendChild(row);
+  /** Chuyển product schema cũ → text block để user edit tiếp. Chỉ chạy khi mở
+   *  sản phẩm có sẵn từ data cũ. New product luôn dùng `text` thẳng. */
+  _legacyToText(p) {
+    const parts = [];
+    if (p.price)       parts.push(`Giá: ${p.price}`);
+    if (p.category)    parts.push(`Danh mục: ${p.category}`);
+    if (p.description) parts.push(p.description);
+    const attrs = p.attributes || {};
+    if (p.colors)   attrs["Màu sắc"]   = Array.isArray(p.colors)   ? p.colors.join(", ")   : p.colors;
+    if (p.sizes)    attrs["Kích cỡ"]   = Array.isArray(p.sizes)    ? p.sizes.join(", ")    : p.sizes;
+    if (p.material) attrs["Chất liệu"] = p.material;
+    for (const [k, v] of Object.entries(attrs)) {
+      parts.push(`${k}: ${Array.isArray(v) ? v.join(", ") : v}`);
+    }
+    if ((p.selling_points || []).length) {
+      parts.push("Điểm bán:");
+      for (const sp of p.selling_points) parts.push(`- ${sp}`);
+    }
+    if (p.faq && Object.keys(p.faq).length) {
+      parts.push("FAQ:");
+      for (const [q, a] of Object.entries(p.faq)) parts.push(`Hỏi: ${q}\nĐáp: ${a}`);
+    }
+    return parts.join("\n");
   }
 
   async _save(e) {
     e.preventDefault();
     const form = e.target;
     const payload = {
-      id: form.id.value.trim(),
+      id:   form.id.value.trim(),
       name: form.name.value.trim(),
-      price: form.price.value.trim(),
-      description: form.description.value.trim(),
-      image_url: form.image_url.value.trim(),
-      category: form.category.value.trim(),
-      attributes: {},
-      selling_points: [],
-      faq: {},
+      text: form.text.value.trim(),
     };
-    for (const row of this.$$(".kv-row", this.$("#attrs-editor"))) {
-      const [k, v] = row.querySelectorAll("input");
-      if (k.value.trim()) payload.attributes[k.value.trim()] = v.value.trim();
-    }
-    for (const row of this.$$(".list-row", this.$("#sp-editor"))) {
-      const v = row.querySelector("input").value.trim();
-      if (v) payload.selling_points.push(v);
-    }
-    for (const row of this.$$(".kv-row", this.$("#faq-editor"))) {
-      const [k, v] = row.querySelectorAll("input");
-      if (k.value.trim()) payload.faq[k.value.trim()] = v.value.trim();
-    }
+    if (!payload.name) { toast("Cần nhập Tên", "error"); return; }
+    if (!payload.text) { toast("Cần nhập Mô tả", "error"); return; }
 
     let r;
     if (this._editingId !== null) {
@@ -230,13 +214,9 @@ class ProductPanel extends LiveElement {
       toast("Đã lưu", "ok");
       this.$("#product-modal").classList.remove("open");
       this.refresh();
-      // Notify live-panel to refresh its product dropdown
       document.querySelector("live-panel")?.refreshProducts?.();
     } else toast(r.msg, "error");
   }
-
-  // Replace inherited $$ for scoped queries
-  $$(s, root) { return Array.from((root || this).querySelectorAll(s)); }
 }
 
 customElements.define("product-panel", ProductPanel);

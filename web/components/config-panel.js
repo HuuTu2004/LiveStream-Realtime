@@ -4,6 +4,15 @@ import { LiveElement } from "./shared/element.js";
 import { api, escapeHtml, escapeAttr } from "./shared/api.js";
 import { toast } from "./shared/toast.js";
 
+const GROUPS = [
+  { id: "brain",  title: "Brain bán hàng",   subtitle: "Pitch, FAQ retrieval, session tuning." },
+  { id: "llm",    title: "LLM",              subtitle: "Provider, model, temperature, max tokens." },
+  { id: "tts",    title: "TTS / Voice",      subtitle: "Engine, voice id, tốc độ, độ ổn định." },
+  { id: "avatar", title: "Avatar",           subtitle: "Model, batch, smoothing, gesture priority." },
+  { id: "server", title: "Server / Transport", subtitle: "WSStream, virtualcam, ports." },
+  { id: "studio", title: "Studio",           subtitle: "Đường dẫn data, jobs, training defaults." },
+];
+
 class ConfigPanel extends LiveElement {
   constructor() {
     super();
@@ -13,30 +22,55 @@ class ConfigPanel extends LiveElement {
 
   render() {
     this.innerHTML = `
-      <h2>Cài đặt hệ thống</h2>
-      <p class="hint">Toàn bộ tham số có thể chỉnh tại đây. Field có <span class="badge restart">RESTART</span> cần khởi động lại server.</p>
+      <div class="panel-head">
+        <div class="title-block">
+          <h2>Cài đặt hệ thống</h2>
+          <div class="subtitle">
+            Toàn bộ tham số có thể chỉnh tại đây. Field có <span class="badge restart">RESTART</span> cần khởi động lại server;
+            <span class="badge dynamic">DYNAMIC</span> áp dụng ngay; <span class="badge secret">SECRET</span> được mã hóa.
+          </div>
+        </div>
+      </div>
 
-      <div class="card"><h3>🧠 Bộ não bán hàng</h3><form data-config-form data-group="brain"></form></div>
-      <div class="card"><h3>💬 LLM</h3><form data-config-form data-group="llm"></form></div>
-      <div class="card"><h3>🎙️ TTS / Voice</h3><form data-config-form data-group="tts"></form></div>
-      <div class="card"><h3>🎥 Avatar</h3><form data-config-form data-group="avatar"></form></div>
-      <div class="card"><h3>🌐 Server / Transport</h3><form data-config-form data-group="server"></form></div>
-      <div class="card"><h3>🛠️ Studio</h3><form data-config-form data-group="studio"></form></div>
+      ${GROUPS.map((g) => `
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h3>${g.title}</h3>
+              <span class="subtitle">${g.subtitle}</span>
+            </div>
+          </div>
+          <form data-config-form data-group="${g.id}"></form>
+        </div>`).join("")}
 
       <div class="card">
-        <h3>Raw JSON</h3>
+        <div class="card-head">
+          <div>
+            <h3>Raw JSON</h3>
+            <span class="subtitle">Snapshot toàn bộ config hiện tại.</span>
+          </div>
+          <div class="actions">
+            <button id="copy-raw" class="btn-secondary btn-small">⧉ Copy</button>
+          </div>
+        </div>
         <pre id="config-raw"></pre>
       </div>
     `;
   }
 
-  afterMount() {
-    this.refresh();
+  bind() {
+    this.on("#copy-raw", "click", async () => {
+      try {
+        await navigator.clipboard.writeText(this.$("#config-raw").textContent);
+        toast("Đã copy JSON", "ok");
+      } catch {
+        toast("Copy thất bại", "error");
+      }
+    });
   }
 
-  onActivate() {
-    this.refresh();
-  }
+  afterMount() { this.refresh(); }
+  onActivate() { this.refresh(); }
 
   async refresh() {
     const j = await api("/config");
@@ -49,7 +83,7 @@ class ConfigPanel extends LiveElement {
     }
   }
 
-  /** Public — used by audio-panel to render tts group inline */
+  /** Public — used by other panels to render a group inline */
   async renderGroupInto(form, group) {
     if (!form) return;
     if (!this._schema || !Object.keys(this._schema).length) {
@@ -60,6 +94,10 @@ class ConfigPanel extends LiveElement {
     }
     form.innerHTML = "";
     const fields = Object.entries(this._schema).filter(([_, m]) => m.group === group);
+    if (!fields.length) {
+      form.innerHTML = `<div class="empty-state" style="margin:0"><span class="empty-icon">⚙️</span>Nhóm này chưa có field.</div>`;
+      return;
+    }
     for (const [key, meta] of fields) {
       const value = this._current[key];
       const row = document.createElement("div");
@@ -75,7 +113,7 @@ class ConfigPanel extends LiveElement {
           `<option value="${escapeAttr(c)}" ${String(value) === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}</select>`;
       } else if (meta.type === "bool") {
         inputHtml = `<select id="${id}" name="${key}">
-          <option value="true" ${value ? "selected" : ""}>Bật</option>
+          <option value="true"  ${value ? "selected" : ""}>Bật</option>
           <option value="false" ${!value ? "selected" : ""}>Tắt</option>
         </select>`;
       } else if (meta.type === "int" || meta.type === "float") {
@@ -87,7 +125,7 @@ class ConfigPanel extends LiveElement {
       }
       row.innerHTML = `
         <label for="${id}" class="field-label">
-          ${escapeHtml(key)}${badge}${secret}
+          <span class="field-key">${escapeHtml(key)}</span>${badge}${secret}
           <span class="field-desc">${escapeHtml(meta.description || "")}</span>
         </label>
         <div>${inputHtml}</div>`;
@@ -96,7 +134,7 @@ class ConfigPanel extends LiveElement {
     if (!form.querySelector(".form-actions")) {
       const actions = document.createElement("div");
       actions.className = "form-actions";
-      actions.innerHTML = `<button type="submit">Lưu nhóm này</button>`;
+      actions.innerHTML = `<button type="submit" class="btn-primary">Lưu nhóm này</button>`;
       form.appendChild(actions);
     }
     form.onsubmit = async (e) => {

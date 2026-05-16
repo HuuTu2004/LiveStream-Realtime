@@ -33,8 +33,8 @@ SETTINGS_PATH = os.environ.get("LIVETALKING_SETTINGS_PATH", "data/settings.json"
 CONFIG_SCHEMA: dict[str, dict] = {
     # ─── TTS / Voice ───────────────────────────────────────────────
     "tts": {"type": "str", "group": "tts", "restart": True,
-            "choices": ["vieneu"],
-            "description": "TTS engine: vieneu (Apache 2.0, realtime CPU/GPU)"},
+            "choices": ["vieneu", "vieneu_http"],
+            "description": "TTS engine: vieneu (in-process, single venv) | vieneu_http (production multi-venv qua HTTP)"},
     # VieNeu-TTS
     "vieneu_mode": {"type": "str", "group": "tts", "restart": True,
                     "choices": ["turbo", "standard", "gpu", "remote"],
@@ -65,8 +65,26 @@ CONFIG_SCHEMA: dict[str, dict] = {
     "persona": {"type": "str", "group": "brain", "restart": False,
                 "choices": ["linh_vi"],
                 "description": "Persona MC (Linh - Sài Gòn)"},
+    "continuous_talk": {"type": "bool", "group": "brain", "restart": False,
+                        "description": "BẬT (default): avatar nói liên tục không nghỉ. TẮT: chỉ nói khi im lặng > silence_gap_secs."},
     "silence_gap_secs": {"type": "int", "group": "brain", "restart": False,
-                         "description": "Số giây im lặng trước khi brain tự nói (10-120)"},
+                         "description": "(legacy, chỉ khi continuous_talk=False) Số giây im lặng trước khi brain tự nói (10-120)"},
+    "idle_poll_secs": {"type": "float", "group": "brain", "restart": False,
+                       "description": "(continuous_talk) Chu kỳ check is_idle() để fire câu kế. 0.1s = phản ứng tức thời, CPU không đáng kể."},
+    "comment_batch_secs": {"type": "float", "group": "brain", "restart": False,
+                           "description": "Cửa sổ gom batch comment trước khi LLM. Thấp = reply nhanh, nhiều LLM call hơn."},
+    "random_event_chance": {"type": "float", "group": "brain", "restart": False,
+                            "description": "(continuous_talk) Xác suất mỗi lượt idle fire random event (flash sale, stock warning). 0-1."},
+    "target_buffer_secs": {"type": "float", "group": "brain", "restart": False,
+                           "description": "(continuous_talk) Safety margin (s) audio cần giữ trong TTS queue NGOÀI LLM time. Threshold tổng = target + LLM_EMA tự adapt."},
+    "tts_chars_per_sec": {"type": "float", "group": "brain", "restart": False,
+                          "description": "(continuous_talk) Ước tính tốc độ TTS đọc (char/s). Vieneu VI ~12-16. Chỉnh nếu buffer estimate lệch."},
+    "llm_duration_init": {"type": "float", "group": "brain", "restart": False,
+                          "description": "(continuous_talk) Prior LLM duration init (s). EMA α=0.3 tự update sau 3-4 speak hội tụ về thực tế."},
+    "silent_sync_polls": {"type": "int", "group": "brain", "restart": False,
+                          "description": "(continuous_talk) Số poll silent liên tiếp thì sync buffer estimate về now (giải kẹt). 5 × 0.1s = 0.5s."},
+    "speak_timeout_secs": {"type": "float", "group": "brain", "restart": False,
+                           "description": "Hard timeout 1 LLM stream (s). Phòng LLM treo. Quá hạn → cancel + release lock + fire stage kế."},
 
     # ─── LLM ───────────────────────────────────────────────────────
     "llm_url": {"type": "str", "group": "llm", "restart": False,
@@ -239,9 +257,17 @@ async def config_set(request):
         changed = apply_overrides_to_opt(opt, dynamic_fields)
 
         # Brain auto-reload nếu có brain field đổi và brain đang chạy
-        brain_fields = {"brain_enabled", "products_path", "persona", "silence_gap_secs",
-                        "llm_url", "llm_model", "llm_api_key",
-                        "vieneu_ref_audio", "vieneu_ref_text"}
+        brain_fields = {
+            "brain_enabled", "products_path", "persona",
+            "llm_url", "llm_model", "llm_api_key",
+            "vieneu_ref_audio", "vieneu_ref_text",
+            # Continuous-talk knobs — đọc trong BrainManager.__init__,
+            # cần re-init brain để áp giá trị mới
+            "continuous_talk", "silence_gap_secs", "idle_poll_secs",
+            "comment_batch_secs", "random_event_chance",
+            "target_buffer_secs", "tts_chars_per_sec",
+            "llm_duration_init", "silent_sync_polls", "speak_timeout_secs",
+        }
         brain_changed = bool(set(changed.keys()) & brain_fields)
         if brain_changed:
             try:

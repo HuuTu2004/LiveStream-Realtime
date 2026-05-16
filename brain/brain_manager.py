@@ -52,14 +52,19 @@ class BrainManager:
 
         # Script engine (8-stage + silence + random events)
         self.script_engine = ScriptEngine(
-            silence_timeout=getattr(opt, "silence_gap_secs", 30)
+            silence_timeout=getattr(opt, "silence_gap_secs", 30),
+            continuous=getattr(opt, "continuous_talk", True),
+            idle_poll_secs=getattr(opt, "idle_poll_secs", 0.1),
+            random_event_chance=getattr(opt, "random_event_chance", 0.25),
         )
         self.script_engine.set_speaker(self.speak)
+        self.script_engine.set_idle_fn(self.is_idle)
 
         # Comment handler (intent + batching)
         self.comments = CommentHandler(
             catalog=self.catalog,
             script_engine=self.script_engine,
+            batch_window_secs=getattr(opt, "comment_batch_secs", 3.0),
         )
         self.comments.set_speaker(self.speak)
 
@@ -67,6 +72,30 @@ class BrainManager:
         self._stream_start = time.monotonic()
         self._priority_count = 0  # đếm các speak priority đang chạy
         self._lock = asyncio.Lock()
+        # Serialize tất cả speak() — comment priority và stage prompt cùng dùng
+        # 1 lock → FIFO, không bao giờ overlap LLM stream / TTS push.
+        self._speak_lock = asyncio.Lock()
+        # Time-based buffer estimator: tránh khựng bằng cách fire câu kế khi
+        # estimated remaining buffer < (safety_margin + LLM_duration_EMA).
+        # Mỗi speak() cộng dồn estimated audio duration vào _buffer_drain_at
+        # và cập nhật LLM duration EMA — system tự thích nghi tốc độ LLM.
+        self._target_buffer_secs = float(getattr(opt, "target_buffer_secs", 1.5))
+        self._tts_chars_per_sec = max(4.0, float(getattr(opt, "tts_chars_per_sec", 14.0)))
+        self._buffer_drain_at = 0.0  # monotonic time khi buffer ước tính cạn
+        # LLM stream duration EMA — khởi tạo bằng prior 2s (typical), update
+        # sau mỗi speak() bằng EMA α=0.3 → adaptive với LLM thực tế. Là phần
+        # SỐNG CÒN của 'không khựng': fire câu kế trước khi cạn ÍT NHẤT bằng
+        # thời gian LLM mất để sinh + push toàn bộ câu mới.
+        self._llm_duration_ema = float(getattr(opt, "llm_duration_init", 2.0))
+        self._llm_ema_alpha = 0.3
+        # Hard timeout cho mỗi speak() — phòng LLM server treo (network hỏng,
+        # vLLM OOM, Ollama lock). Quá timeout → cancel, release lock, brain
+        # tiếp tục stage kế. Không có timeout = brain chết im lặng vĩnh viễn.
+        self._speak_timeout = float(getattr(opt, "speak_timeout_secs", 30.0))
+        # Silent-correction: nếu avatar thực sự silent kéo dài (estimate sai),
+        # đồng bộ _buffer_drain_at về now để không bao giờ kẹt.
+        self._silent_polls = 0
+        self._silent_sync_polls = max(2, int(getattr(opt, "silent_sync_polls", 5)))
         self._running = False
         self._current_stage = self.script_engine.current_stage()
         self._last_text: str = ""
@@ -117,39 +146,122 @@ class BrainManager:
         log.info("[Brain] Stage → %s", stage)
 
     # ------------------------------------------------------------------
-    async def speak(self, prompt: str, priority: bool = False) -> None:
-        """Đẩy 1 prompt qua LLM → gesture-tagger → TTS → avatar.
+    def is_idle(self) -> bool:
+        """True khi ScriptEngine nên fire câu kế để giữ buffer đầy.
 
-        Khi priority=True → gắn cờ để các non-priority speak khác lùi lại
-        (hiện tại chỉ ghi log; backpressure thực tế nằm ở TTS queue).
+        Time-based: ước tính `remaining = _buffer_drain_at - now` (giây audio
+        còn trong queue). Trả True khi remaining < target_buffer → fire LLM
+        câu kế ngay, kịp đẩy text vào TTS trước khi audio queue cạn.
+
+        Đảm bảo KHÔNG khựng: target_buffer chọn > LLM TTFT điển hình. Mặc định
+        3s = đủ cover LLM 1-3s. Khi avatar phát đến điểm còn 3s reserve,
+        ScriptEngine fire → LLM 2s xong → câu mới vào TTS khi reserve còn 1s
+        → avatar nuốt tiếp không cảm giác gián đoạn.
+
+        Silent-correction: nếu avatar im lặng thực tế kéo dài hơn estimate
+        (TTS chậm hơn ước tính), đồng bộ _buffer_drain_at = now để giải kẹt.
+        """
+        if self._speak_lock.locked():
+            return False
+
+        try:
+            speaking = self.avatar_session.is_speaking()
+        except Exception:
+            log.debug("[Brain] is_speaking() probe failed", exc_info=True)
+            speaking = False
+
+        now = time.monotonic()
+
+        if speaking:
+            self._silent_polls = 0
+        else:
+            self._silent_polls += 1
+            if self._silent_polls >= self._silent_sync_polls:
+                # Avatar silent thực sự lâu hơn estimate → sync về now.
+                # Không trừ về 0 hẳn để vẫn còn 1 chút momentum cho fire kế.
+                self._buffer_drain_at = min(self._buffer_drain_at, now)
+
+        remaining = self._buffer_drain_at - now
+        # Threshold = safety_margin + LLM duration EMA → fire đủ sớm để câu
+        # kế xong LLM TRƯỚC khi buffer cạn. Cộng EMA mới là điểm cốt lõi để
+        # không khựng khi LLM chậm.
+        threshold = self._target_buffer_secs + self._llm_duration_ema
+        return remaining < threshold
+
+    # ------------------------------------------------------------------
+    async def speak(self, prompt: str, priority: bool = False) -> None:
+        """Đẩy 1 prompt qua LLM → SentenceSplitter → TTS → avatar.
+
+        Mọi speak() đều serialize qua self._speak_lock → comment priority và
+        stage prompt FIFO, không bao giờ chen ngang giữa câu (TTS queue chỉ
+        thấy nguyên 1 đoạn rồi mới đến đoạn kế). Khi priority=True chỉ tăng
+        counter để telemetry/UI biết, không thay đổi luồng.
         """
         if not self._running:
             log.warning("[Brain] speak() called while not running")
             return
 
-        product = self.catalog.current_product()
         if priority:
             self._priority_count += 1
         try:
-            stream = self.llm.stream(
-                prompt,
-                product=product,
-                stream_minutes=self.stream_minutes,
-            )
-            splitter = SentenceSplitter()
-            had_output = False
-            captured: list[str] = []
-            async for sent in splitter.feed_stream(stream):
-                if not sent:
-                    continue
-                had_output = True
-                captured.append(sent)
-                self.avatar_session.put_msg_txt(sent)
-            if had_output:
-                self._last_text = " ".join(captured)
-                log.debug("[Brain] spoke (%d sent): %s", len(captured), self._last_text[:80])
-            else:
-                log.warning("[Brain] empty LLM output for prompt: %s", prompt[:60])
+            async with self._speak_lock:
+                # Re-check sau khi acquire lock — có thể stop() đã gọi trong
+                # lúc chờ lock.
+                if not self._running:
+                    return
+                llm_start = time.monotonic()
+                product = self.catalog.current_product()
+                splitter = SentenceSplitter()
+                had_output = False
+                captured: list[str] = []
+
+                async def _drain_stream() -> None:
+                    nonlocal had_output
+                    stream = self.llm.stream(
+                        prompt,
+                        product=product,
+                        stream_minutes=self.stream_minutes,
+                    )
+                    async for sent in splitter.feed_stream(stream):
+                        if not sent:
+                            continue
+                        had_output = True
+                        captured.append(sent)
+                        self.avatar_session.put_msg_txt(sent)
+
+                try:
+                    await asyncio.wait_for(_drain_stream(), timeout=self._speak_timeout)
+                except asyncio.TimeoutError:
+                    log.warning("[Brain] speak() timeout %.1fs — LLM treo, "
+                                "release lock và bỏ qua. Stage kế sẽ fire.",
+                                self._speak_timeout)
+                    # captured/had_output có thể đã partial — vẫn account vào
+                    # buffer nếu có để tránh fire chồng ngay sau timeout.
+                if had_output:
+                    self._last_text = " ".join(captured)
+                    now = time.monotonic()
+                    # Update LLM duration EMA (adaptive — tự điều chỉnh theo
+                    # LLM thực tế trong session). is_idle threshold dùng EMA
+                    # này để fire câu kế đủ sớm tránh khựng.
+                    llm_dur = now - llm_start
+                    self._llm_duration_ema = (
+                        (1 - self._llm_ema_alpha) * self._llm_duration_ema
+                        + self._llm_ema_alpha * llm_dur
+                    )
+                    # Time-based buffer accounting: ước tính tổng số giây audio
+                    # vừa push qua TTS. _buffer_drain_at giữ thời điểm queue
+                    # ước tính cạn — max(now, prev) đảm bảo monotonic kể cả
+                    # khi estimate trước đã hết hạn.
+                    total_chars = sum(len(s) for s in captured)
+                    duration = total_chars / self._tts_chars_per_sec
+                    self._buffer_drain_at = max(now, self._buffer_drain_at) + duration
+                    remaining = self._buffer_drain_at - now
+                    log.debug("[Brain] spoke (%d sent, %d chars, +%.1fs audio, "
+                              "buffer=%.1fs, llm_ema=%.1fs, priority=%s): %s",
+                              len(captured), total_chars, duration, remaining,
+                              self._llm_duration_ema, priority, self._last_text[:80])
+                else:
+                    log.warning("[Brain] empty LLM output for prompt: %s", prompt[:60])
         except Exception:
             log.exception("[Brain] speak error")
         finally:

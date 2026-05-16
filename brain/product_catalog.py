@@ -1,27 +1,12 @@
-"""Generic product catalog với hot-reload + keyword retrieval + CRUD.
+"""Product catalog tối giản — schema {id, name, text}.
 
-Schema linh hoạt — KHÔNG fix cho ngành quần áo. Mỗi product chỉ bắt buộc `id`,
-các field khác đều optional. Format generator render mọi field có sẵn để LLM
-brain hiểu (quần áo, điện tử, mỹ phẩm, thực phẩm, dịch vụ — đều dùng được).
+Mỗi product chỉ có 3 field: `id` (unique), `name` (tên hiển thị), `text` (mô tả
+đầy đủ dạng text tự do). User paste cả block text vào, LLM brain nhận text
+nguyên gốc khi sinh câu nói → tự thích nghi mọi ngành hàng (quần áo, điện tử,
+mỹ phẩm, thực phẩm, dịch vụ, BĐS, F&B…) không cần parse/extract trước.
 
-Schema khuyến nghị:
-  {
-    "id": "abc-01",                  // required, unique
-    "name": "...",                   // tên hiển thị
-    "price": "299.000đ",             // string flexible
-    "description": "...",            // mô tả dài
-    "image_url": "...",              // optional
-    "attributes": {                  // dict bất kỳ: color, size, weight, voltage, expiry...
-      "Màu": "Đen, Trắng",
-      "Kích thước": "S, M, L",
-      "Chất liệu": "Cotton 100%"
-    },
-    "selling_points": ["...","..."], // bullet selling
-    "faq": {"câu hỏi": "câu trả lời"}
-  }
-
-Backward compat: vẫn đọc được legacy fields `colors`, `sizes`, `material` —
-sẽ tự gom vào `attributes` khi render.
+Retrieval đơn giản: token overlap giữa comment và (name + text).
+Mã sản phẩm dạng "sp 1", "mã 2", hoặc số đứng 1 mình → match theo index.
 """
 
 from __future__ import annotations
@@ -50,59 +35,21 @@ _CODE_RE = re.compile(
 )
 
 
-def _coerce_legacy_attrs(p: dict) -> dict:
-    """Gom legacy fields (colors/sizes/material) vào attributes nếu chưa có."""
-    attrs = dict(p.get("attributes") or {})
-    legacy_map = {
-        "Màu sắc": p.get("colors"),
-        "Kích cỡ": p.get("sizes"),
-        "Chất liệu": p.get("material"),
-    }
-    for k, v in legacy_map.items():
-        if v and k not in attrs:
-            if isinstance(v, list):
-                attrs[k] = ", ".join(str(x) for x in v if x)
-            else:
-                attrs[k] = str(v)
-    return attrs
-
-
 def format_product(p: dict) -> str:
-    """Render mọi field có giá trị thành text block cho LLM. Generic, không fix domain."""
-    lines: list[str] = []
-
-    name = p.get("name") or p.get("title") or "—"
-    lines.append(f"Tên: {name}")
-
-    if p.get("price"):
-        lines.append(f"Giá: {p['price']}")
-
-    if p.get("description"):
-        lines.append(f"Mô tả: {p['description']}")
-
-    attrs = _coerce_legacy_attrs(p)
-    if attrs:
-        lines.append("Thuộc tính:")
-        for k, v in attrs.items():
-            if v in (None, "", []):
-                continue
-            if isinstance(v, (list, tuple)):
-                v = ", ".join(str(x) for x in v)
-            lines.append(f"  • {k}: {v}")
-
-    pts = p.get("selling_points") or []
-    if pts:
-        lines.append("Điểm bán:")
-        lines.extend(f"  • {s}" for s in pts if s)
-
-    faq = p.get("faq") or {}
-    if faq:
-        lines.append("Hỏi & Đáp:")
-        for q, a in faq.items():
-            lines.append(f"  Hỏi: {q}")
-            lines.append(f"  Đáp: {a}")
-
-    return "\n".join(lines)
+    """Render product cho LLM brain. Trả thẳng text user đã paste, kèm header tên."""
+    if not p:
+        return "Chưa có sản phẩm cụ thể."
+    name = (p.get("name") or "").strip() or "Sản phẩm"
+    text = (p.get("text") or "").strip()
+    if text:
+        return f"Tên: {name}\n{text}"
+    # Legacy fallback: nếu data cũ còn các field structured, gom thô lại.
+    legacy_lines = [f"Tên: {name}"]
+    for k in ("price", "description"):
+        v = p.get(k)
+        if v:
+            legacy_lines.append(f"{k}: {v}")
+    return "\n".join(legacy_lines)
 
 
 def _extract_code_number(comments: List[str]) -> Optional[int]:
@@ -123,7 +70,7 @@ def _extract_code_number(comments: List[str]) -> Optional[int]:
 
 
 class ProductCatalog:
-    """Singleton-per-path catalog. Hot-reload theo file mtime + CRUD operations."""
+    """Singleton-per-path catalog với hot-reload (mtime) + CRUD."""
 
     _instances: dict[str, "ProductCatalog"] = {}
     _lock = threading.Lock()
@@ -160,7 +107,6 @@ class ProductCatalog:
             log.error("[Catalog] Lỗi load: %s", e)
 
     def _save(self) -> None:
-        """Persist current products list to JSON file."""
         os.makedirs(os.path.dirname(self.json_path) or ".", exist_ok=True)
         tmp = self.json_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -220,7 +166,6 @@ class ProductCatalog:
             self._load()
             for i, p in enumerate(self.products):
                 if str(p.get("id")) == str(pid):
-                    # Cho phép đổi id; check unique nếu đổi
                     new_id = fields.get("id", pid)
                     if str(new_id) != str(pid):
                         if any(str(x.get("id")) == str(new_id) for j, x in enumerate(self.products) if j != i):
@@ -258,30 +203,19 @@ class ProductCatalog:
         for w in str(p.get("name", "")).lower().split():
             if len(w) > 2 and w in tokens:
                 score += 3
-        for sp in p.get("selling_points", []) or []:
-            for w in str(sp).lower().split():
-                if len(w) > 2 and w in tokens:
-                    score += 1
-        attrs = _coerce_legacy_attrs(p)
-        for v in attrs.values():
-            text = str(v).lower()
-            for w in text.split():
-                if len(w) > 2 and w in tokens:
-                    score += 1
-        for q in (p.get("faq") or {}).keys():
-            for w in str(q).lower().split():
-                if len(w) > 2 and w in tokens:
-                    score += 2
-        if p.get("description"):
-            for w in str(p["description"]).lower().split():
-                if len(w) > 2 and w in tokens:
-                    score += 1
+        for w in str(p.get("text", "")).lower().split():
+            if len(w) > 2 and w in tokens:
+                score += 1
         return score
 
     def get_relevant_product(
         self, comments: List[str]
     ) -> Tuple[str, Optional[int]]:
-        """Match comments → (product_context_text, idx_0based_hoặc_None)."""
+        """Match comments → (product_context_text, idx_0based_hoặc_None).
+
+        Ưu tiên mã số ("mã 2" / "sp 3" / "5"). Không có thì score token overlap
+        trên name + text. Tokens loại stopwords thuần Việt + từ <2 ký tự.
+        """
         self._load()
         if not self.products:
             return "Chưa có thông tin sản phẩm.", None

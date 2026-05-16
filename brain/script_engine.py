@@ -138,15 +138,33 @@ _TIME_MILESTONES = [
 
 
 SpeakFn = Callable[..., Awaitable[None]]
+IdleFn = Callable[[], bool]
 
 
 class ScriptEngine:
-    """Async loop check mỗi 5s — fire stage prompt khi silence vượt threshold."""
+    """Drives stage prompts + random events.
 
-    def __init__(self, silence_timeout: int = 30):
+    Có 2 chế độ (chọn qua flag continuous):
+      - continuous=True (default): idle-driven — poll is_idle_fn() mỗi
+        idle_poll_secs, vừa idle là fire stage/event ngay. Avatar nói liên tục.
+      - continuous=False: legacy silence-driven — đợi silence > threshold mới
+        fire. Để dành cho usecase muốn có gap dài giữa các đoạn.
+    """
+
+    def __init__(
+        self,
+        silence_timeout: int = 30,
+        continuous: bool = True,
+        idle_poll_secs: float = 0.5,
+        random_event_chance: float = 0.25,
+    ):
         self._speak_fn: Optional[SpeakFn] = None
+        self._idle_fn: Optional[IdleFn] = None
         self._stage_cb: Optional[Callable[[str], None]] = None
         self._silence_timeout = max(10, silence_timeout)
+        self._continuous = bool(continuous)
+        self._idle_poll_secs = max(0.1, float(idle_poll_secs))
+        self._random_event_chance = max(0.0, min(1.0, float(random_event_chance)))
         self._last_interaction = 0.0
         self._stage_idx = 0
         self._start_time = 0.0
@@ -164,6 +182,11 @@ class ScriptEngine:
 
     def set_speaker(self, fn: SpeakFn) -> None:
         self._speak_fn = fn
+
+    def set_idle_fn(self, fn: IdleFn) -> None:
+        """Inject từ BrainManager — return True khi avatar không nói VÀ
+        speak_lock không bị giữ. Chỉ dùng ở continuous mode."""
+        self._idle_fn = fn
 
     def set_stage_callback(self, cb: Callable[[str], None]) -> None:
         self._stage_cb = cb
@@ -228,15 +251,22 @@ class ScriptEngine:
                 return True
         return False
 
-    async def _fire_silence(self) -> None:
-        self._silence_streak += 1
+    async def _fire_stage_prompt(self, reason: str = "idle") -> None:
+        """Fire stage prompt hiện tại + advance index.
 
-        if self._silence_streak >= 4 and self._stage_idx < 5:
-            self._stage_idx = 5
-            log.info("[ScriptEngine] Im lặng kéo dài → nhảy sang ƯU ĐÃI")
+        reason='silence' giữ logic legacy: silence kéo dài 4 lần liên tiếp →
+        nhảy sang ƯU ĐÃI để cứu chuyển đổi. continuous mode dùng reason='idle'
+        và bỏ qua silence_streak heuristic vì idle là trạng thái bình thường.
+        """
+        if reason == "silence":
+            self._silence_streak += 1
+            if self._silence_streak >= 4 and self._stage_idx < 5:
+                self._stage_idx = 5
+                log.info("[ScriptEngine] Im lặng kéo dài → nhảy sang ƯU ĐÃI")
 
         entry = SALES_CYCLE[self._stage_idx]
-        log.info("[ScriptEngine] Khoảng lặng → '%s'", entry["stage"])
+        log.info("[ScriptEngine] %s → '%s'",
+                 "Khoảng lặng" if reason == "silence" else "Idle", entry["stage"])
         await self._safe_speak(entry["prompt"], priority=False)
         self._advance_stage()
 
@@ -246,6 +276,10 @@ class ScriptEngine:
         except RuntimeError:
             pass
         self._next_silence_threshold = self._new_silence_threshold()
+
+    # Backward-compat alias: code/test cũ vẫn có thể gọi _fire_silence.
+    async def _fire_silence(self) -> None:
+        await self._fire_stage_prompt(reason="silence")
 
     async def _safe_speak(self, prompt: str, priority: bool = False) -> None:
         if not self._speak_fn:
@@ -286,8 +320,66 @@ class ScriptEngine:
             except Exception:
                 pass
 
-        log.info("[ScriptEngine] Bắt đầu — im lặng %ds sẽ tự nói", self._silence_timeout)
+        if self._continuous:
+            if self._idle_fn is None:
+                log.warning("[ScriptEngine] continuous=True nhưng chưa set_idle_fn() — "
+                            "fallback silence-driven")
+                await self._run_silence_driven(loop)
+            else:
+                log.info("[ScriptEngine] Bắt đầu (continuous) — poll mỗi %.2fs",
+                         self._idle_poll_secs)
+                await self._run_idle_driven(loop)
+        else:
+            log.info("[ScriptEngine] Bắt đầu (silence-driven) — im lặng %ds sẽ tự nói",
+                     self._silence_timeout)
+            await self._run_silence_driven(loop)
 
+    async def _run_idle_driven(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Continuous mode: vừa idle là fire câu kế.
+
+        Trật tự mỗi vòng:
+          1. Avatar đang nói / speak_lock đang giữ → skip vòng này.
+          2. Viewer/time milestone chưa fire → fire.
+          3. Xác suất random_event_chance → fire random event nếu đến lịch.
+          4. Còn lại → fire stage prompt theo SALES_CYCLE.
+
+        Quan trọng: _safe_speak là `await`, KHÔNG `create_task`. Do
+        BrainManager._speak_lock serialize, await speak xong là biết TTS đã
+        nhận full sentence; vòng sau idle_fn() trả True chỉ khi avatar phát
+        hết audio thật sự — không spam câu mới chồng lên câu cũ.
+        """
+        while not self._stopped:
+            try:
+                await asyncio.sleep(self._idle_poll_secs)
+            except asyncio.CancelledError:
+                break
+
+            try:
+                if self._idle_fn is None or not self._idle_fn():
+                    continue
+
+                now = loop.time()
+                elapsed = now - self._start_time
+
+                if await self._check_viewer_milestones():
+                    self.reset_silence()
+                    continue
+                if await self._check_time_milestones(elapsed):
+                    self.reset_silence()
+                    continue
+                if (self._random_event_chance > 0
+                        and random.random() < self._random_event_chance
+                        and await self._check_random_events(now)):
+                    self.reset_silence()
+                    continue
+                await self._fire_stage_prompt(reason="idle")
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception("[ScriptEngine] idle loop error")
+
+    async def _run_silence_driven(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Legacy mode: check mỗi 5s, fire khi silence > threshold."""
         while not self._stopped:
             try:
                 await asyncio.sleep(5)
@@ -307,7 +399,7 @@ class ScriptEngine:
                 if silence < self._next_silence_threshold:
                     await self._check_random_events(now)
                     continue
-                await self._fire_silence()
+                await self._fire_stage_prompt(reason="silence")
             except asyncio.CancelledError:
                 break
             except Exception:

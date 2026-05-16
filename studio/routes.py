@@ -282,33 +282,18 @@ async def products_upload(request):
 
 
 def _normalize_product_payload(p: dict) -> dict:
-    """Chuẩn hóa payload từ form: ép kiểu, strip empty, nhận attributes như dict bất kỳ."""
+    """Schema tối giản {id, name, text}. Strip + bỏ field rỗng.
+
+    `text` là raw description user paste vào — LLM brain nhận nguyên gốc, không
+    parse trước. Phù hợp đa ngành hàng.
+    """
     if not isinstance(p, dict):
         raise ValueError("payload phải là object")
     out: dict = {}
-    for key in ("id", "name", "price", "description", "image_url", "image_path", "category"):
-        if p.get(key) not in (None, ""):
-            out[key] = str(p[key]).strip()
-    # attributes: object/dict bất kỳ
-    attrs = p.get("attributes")
-    if isinstance(attrs, dict):
-        out["attributes"] = {str(k): (v if not isinstance(v, list) else [str(x) for x in v]) for k, v in attrs.items() if v not in (None, "")}
-    # selling_points: list
-    pts = p.get("selling_points")
-    if isinstance(pts, list):
-        out["selling_points"] = [str(x).strip() for x in pts if str(x).strip()]
-    elif isinstance(pts, str) and pts.strip():
-        out["selling_points"] = [s.strip() for s in pts.split("\n") if s.strip()]
-    # faq: dict {q:a}
-    faq = p.get("faq")
-    if isinstance(faq, dict):
-        out["faq"] = {str(k).strip(): str(v).strip() for k, v in faq.items() if str(k).strip()}
-    # Backward compat legacy fields
-    for legacy in ("colors", "sizes"):
-        if isinstance(p.get(legacy), list):
-            out[legacy] = [str(x) for x in p[legacy] if x]
-    if "material" in p and p["material"]:
-        out["material"] = str(p["material"])
+    for key in ("id", "name", "text"):
+        v = p.get(key)
+        if v not in (None, ""):
+            out[key] = str(v).strip()
     return out
 
 

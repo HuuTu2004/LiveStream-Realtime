@@ -7,63 +7,104 @@ import { toast } from "./shared/toast.js";
 class VideoPanel extends LiveElement {
   render() {
     this.innerHTML = `
-      <h2>Xử lý video — Avatar & Gesture</h2>
-
-      <div class="card">
-        <h3>1. Upload avatar video</h3>
-        <form id="avatar-upload-form">
-          <div class="grid-2">
-            <label>Avatar ID
-              <input type="text" name="name" required pattern="[a-zA-Z0-9_\\-]{2,40}" placeholder="vd: linh_v1" />
-            </label>
-            <label>Video MP4 (10-60s)
-              <input type="file" name="file" accept="video/*" required />
-            </label>
-          </div>
-          <button type="submit">Upload</button>
-        </form>
-        <div id="avatar-upload-status" class="status"></div>
+      <div class="panel-head">
+        <div class="title-block">
+          <h2>Avatar Studio</h2>
+          <div class="subtitle">Quy trình tạo avatar: upload video gốc → preprocess → (musetalk) train → preview. Kèm bộ gesture cử chỉ tự nhiên.</div>
+        </div>
       </div>
 
-      <div class="card">
-        <h3>2. Preprocess &amp; Train</h3>
-        <form id="avatar-action-form">
-          <div class="grid-2">
-            <label>Avatar ID
-              <select name="avatar_id" id="avatar-select"></select>
-            </label>
-            <label>Model
-              <select name="model">
-                <option value="wav2lip">wav2lip (nhanh, pretrained)</option>
-                <option value="musetalk">musetalk (chất lượng cao)</option>
-                <option value="ultralight">ultralight</option>
-              </select>
-            </label>
-            <label>Epochs (musetalk)
-              <input type="number" name="epochs" value="20" min="1" max="200" />
-            </label>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h3>1 · Upload avatar video</h3>
+              <span class="subtitle">MP4 10–60s, mặt rõ, đủ ánh sáng.</span>
+            </div>
           </div>
-          <div class="btn-row">
-            <button type="button" data-action="preprocess">Preprocess</button>
-            <button type="button" data-action="train">Train (musetalk)</button>
-            <button type="button" data-action="preview">Preview "Xin chào"</button>
+          <form id="avatar-upload-form">
+            <div class="grid-2">
+              <label>Avatar ID
+                <input type="text" name="name" required pattern="[a-zA-Z0-9_\\-]{2,40}" placeholder="vd: linh_v1" />
+              </label>
+              <label>Video MP4
+                <input type="file" name="file" accept="video/*" required />
+              </label>
+            </div>
+            <div class="btn-row">
+              <button type="submit" class="btn-primary">Upload</button>
+            </div>
+          </form>
+          <div id="avatar-upload-status" class="status"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h3>2 · Preprocess &amp; Train</h3>
+              <span class="subtitle">Chọn model phù hợp: wav2lip nhanh, musetalk chất lượng cao.</span>
+            </div>
           </div>
-        </form>
+          <form id="avatar-action-form">
+            <div class="grid-2">
+              <label>Avatar ID
+                <select name="avatar_id" id="avatar-select"></select>
+              </label>
+              <label>Model
+                <select name="model">
+                  <option value="wav2lip">wav2lip (nhanh, pretrained)</option>
+                  <option value="musetalk">musetalk (chất lượng cao)</option>
+                  <option value="ultralight">ultralight</option>
+                </select>
+              </label>
+              <label>Epochs (musetalk)
+                <input type="number" name="epochs" value="20" min="1" max="200" />
+              </label>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="btn-secondary" data-action="preprocess">Preprocess</button>
+              <button type="button" class="btn-secondary" data-action="train">Train (musetalk)</button>
+              <button type="button" class="btn-primary"   data-action="preview">Preview "Xin chào"</button>
+            </div>
+          </form>
+        </div>
       </div>
 
       <div class="card">
         <div class="card-head">
-          <h3>3. Danh sách avatar</h3>
-          <button id="refresh-avatars" class="btn-small">↻ Refresh</button>
+          <div>
+            <h3>3 · Danh sách avatar</h3>
+            <span class="subtitle">Trạng thái xử lý của từng avatar.</span>
+          </div>
+          <div class="actions">
+            <button id="refresh-avatars" class="btn-secondary btn-small">↻ Refresh</button>
+          </div>
         </div>
-        <table class="data-table" id="avatars-table">
-          <thead><tr><th>ID</th><th>Imgs</th><th>Latents</th><th>Face</th><th>Voice</th><th>Gestures</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <div class="table-wrap">
+          <table class="data-table" id="avatars-table">
+            <thead>
+              <tr>
+                <th style="width:160px">ID</th>
+                <th>Images</th>
+                <th>Latents</th>
+                <th>Face</th>
+                <th>Voice</th>
+                <th>Gestures</th>
+                <th style="width:80px"></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
 
       <div class="card">
-        <h3>4. Gesture pack (cử chỉ)</h3>
+        <div class="card-head">
+          <div>
+            <h3>4 · Gesture pack (cử chỉ)</h3>
+            <span class="subtitle">Upload clip MP4 cho mỗi cử chỉ. Trigger để test nhanh.</span>
+          </div>
+        </div>
         <form id="gesture-upload-form">
           <div class="grid-2">
             <label>Avatar ID
@@ -81,22 +122,24 @@ class VideoPanel extends LiveElement {
                 <option value="talk_natural">talk_natural</option>
               </select>
             </label>
-            <label>
+            <label class="checkbox-label" style="margin-top:var(--space-3)">
               <input type="checkbox" name="loop" />
-              Loop?
+              <span>Loop?</span>
             </label>
-            <label>Blend
+            <label>Blend frames
               <input type="number" name="blend" value="5" min="1" max="15" />
             </label>
             <label class="span-2">Clip MP4
               <input type="file" name="file" accept="video/*" required />
             </label>
           </div>
-          <button type="submit">Upload Clip</button>
+          <div class="btn-row">
+            <button type="submit" class="btn-primary">Upload Clip</button>
+          </div>
         </form>
         <div id="gesture-status" class="status"></div>
 
-        <h4>Test trigger</h4>
+        <h4 style="margin-top:var(--space-5)">Test trigger</h4>
         <div class="btn-row" id="gesture-trigger-buttons">
           <button data-g="wave">wave</button>
           <button data-g="point">point</button>
@@ -110,10 +153,17 @@ class VideoPanel extends LiveElement {
 
       <div class="card">
         <div class="card-head">
-          <h3>Jobs</h3>
-          <button id="refresh-jobs" class="btn-small">↻</button>
+          <div>
+            <h3>Jobs gần nhất</h3>
+            <span class="subtitle">10 job mới nhất — tự động cập nhật.</span>
+          </div>
+          <div class="actions">
+            <button id="refresh-jobs" class="btn-secondary btn-small">↻ Refresh</button>
+          </div>
         </div>
-        <div id="jobs-list"></div>
+        <div id="jobs-list">
+          <div class="empty-state"><span class="empty-icon">⚙️</span>Chưa có job nào.</div>
+        </div>
       </div>
     `;
   }
@@ -131,7 +181,6 @@ class VideoPanel extends LiveElement {
   afterMount() {
     this.refreshAvatars();
     this.refreshJobs();
-    // Poll jobs only when this panel is active
     this._jobsInterval = setInterval(() => {
       if (this.closest(".panel")?.classList.contains("active")) this.refreshJobs();
     }, 4000);
@@ -153,7 +202,7 @@ class VideoPanel extends LiveElement {
     const r = await fetch("/studio/avatar/upload", { method: "POST", body: fd });
     const j = await r.json();
     if (j.code === 0) {
-      setStatus(this.$("#avatar-upload-status"), `OK: ${j.data.avatar_id} (${j.data.size_bytes} bytes)`, "ok");
+      setStatus(this.$("#avatar-upload-status"), `OK: ${j.data.avatar_id} (${(j.data.size_bytes / 1024 / 1024).toFixed(2)} MB)`, "ok");
       this.refreshAvatars();
     } else setStatus(this.$("#avatar-upload-status"), j.msg, "error");
   }
@@ -206,23 +255,36 @@ class VideoPanel extends LiveElement {
     const list = j.data.avatars || [];
     const tb = this.$("#avatars-table tbody");
     tb.innerHTML = "";
-    for (const a of list) {
+    if (!list.length) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td><code>${escapeHtml(a.id)}</code></td>
-        <td class="${a.has_full_imgs ? "yes" : "no"}">${a.has_full_imgs ? "✓" : "—"}</td>
-        <td class="${a.has_latents ? "yes" : "no"}">${a.has_latents ? "✓" : "—"}</td>
-        <td class="${a.has_face_imgs ? "yes" : "no"}">${a.has_face_imgs ? "✓" : "—"}</td>
-        <td class="${a.has_voice ? "yes" : "no"}">${a.has_voice ? "✓" : "—"}</td>
-        <td class="${a.has_gestures ? "yes" : "no"}">${a.has_gestures ? "✓" : "—"}</td>
-        <td class="actions"><button class="btn-small btn-danger" data-del="${escapeAttr(a.id)}">Xóa</button></td>`;
+      tr.innerHTML = `<td colspan="7"><div class="empty-state" style="margin:var(--space-2)">
+        <span class="empty-icon">🎭</span>Chưa có avatar nào — upload bên trên.</div></td>`;
       tb.appendChild(tr);
+    } else {
+      for (const a of list) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><code>${escapeHtml(a.id)}</code></td>
+          ${this._capCell(a.has_full_imgs)}
+          ${this._capCell(a.has_latents)}
+          ${this._capCell(a.has_face_imgs)}
+          ${this._capCell(a.has_voice)}
+          ${this._capCell(a.has_gestures)}
+          <td class="actions"><button class="btn-small btn-danger" data-del="${escapeAttr(a.id)}">Xóa</button></td>`;
+        tb.appendChild(tr);
+      }
     }
     for (const sel of this.querySelectorAll(".avatar-select, #avatar-select")) {
       const cur = sel.value;
       sel.innerHTML = list.map((a) => `<option value="${escapeAttr(a.id)}">${escapeHtml(a.id)}</option>`).join("");
       if (list.find((a) => a.id === cur)) sel.value = cur;
     }
+  }
+
+  _capCell(hasIt) {
+    return hasIt
+      ? `<td><span class="pill success" style="padding:1px 8px;font-size:10px">✓</span></td>`
+      : `<td><span class="pill" style="padding:1px 8px;font-size:10px;color:var(--text-disabled)">—</span></td>`;
   }
 
   async _tableClick(e) {
@@ -238,15 +300,25 @@ class VideoPanel extends LiveElement {
     const j = await api("/studio/jobs");
     if (j.code !== 0) return;
     const wrap = this.$("#jobs-list");
+    const jobs = (j.data.jobs || []).slice(0, 10);
+    if (!jobs.length) {
+      wrap.innerHTML = `<div class="empty-state"><span class="empty-icon">⚙️</span>Chưa có job nào.</div>`;
+      return;
+    }
     wrap.innerHTML = "";
-    for (const job of (j.data.jobs || []).slice(0, 10)) {
+    for (const job of jobs) {
       const div = document.createElement("div");
       div.className = "job " + (job.state || "");
       const pct = Math.round((job.progress || 0) * 100);
+      const loss = job.meta?.loss !== undefined ? ` · loss=${job.meta.loss}` : "";
+      const errSpan = job.error ? `<span class="error"> · ${escapeHtml(job.error)}</span>` : "";
       div.innerHTML = `
-        <div class="head"><span>${escapeHtml(job.id)} · ${escapeHtml(job.kind)}</span><span>${escapeHtml(job.state)}</span></div>
+        <div class="head">
+          <span><span class="id">${escapeHtml(job.id)}</span><span class="kind">${escapeHtml(job.kind || "")}</span></span>
+          <span class="state-pill">${escapeHtml(job.state || "")}</span>
+        </div>
         <div class="bar"><div style="width:${pct}%"></div></div>
-        <div class="meta">${escapeHtml(job.meta?.msg || "")} ${job.meta?.loss !== undefined ? "loss=" + job.meta.loss : ""} ${escapeHtml(job.error || "")}</div>`;
+        <div class="meta">${escapeHtml(job.meta?.msg || "")}${loss}${errSpan} · ${pct}%</div>`;
       wrap.appendChild(div);
     }
   }

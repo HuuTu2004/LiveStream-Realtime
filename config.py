@@ -124,7 +124,43 @@ def parse_args():
     parser.add_argument('--persona', type=str, default='linh_vi',
                         help="Persona prompt: linh_vi (tiếng Việt mặc định)")
     parser.add_argument('--silence_gap_secs', type=int, default=30,
-                        help="Khoảng lặng trước khi brain tự nói (giây)")
+                        help="(legacy) Khoảng lặng trước khi brain tự nói. Chỉ dùng khi "
+                             "continuous_talk=False. Khi continuous_talk=True (default), "
+                             "brain nói liên tục dựa vào idle_poll_secs.")
+    parser.add_argument('--continuous_talk', type=_str2bool, default=True,
+                        help="Idle-driven mode: avatar nói liên tục, vừa hết câu là fire câu kế. "
+                             "False = legacy silence-driven (đợi silence_gap_secs giữa mỗi đoạn).")
+    parser.add_argument('--idle_poll_secs', type=float, default=0.1,
+                        help="(continuous_talk) Chu kỳ Brain check is_idle() để fire câu kế. "
+                             "0.1s = phản hồi gần như tức thời khi buffer mỏng đi, CPU không "
+                             "đáng kể (~10 check/s).")
+    parser.add_argument('--comment_batch_secs', type=float, default=3.0,
+                        help="Cửa sổ gom batch comment trước khi flush LLM. Thấp = reply nhanh "
+                             "hơn nhưng nhiều LLM call hơn.")
+    parser.add_argument('--random_event_chance', type=float, default=0.25,
+                        help="(continuous_talk) Xác suất mỗi lượt idle fire random event "
+                             "(flash_sale/stock_warning/...) thay vì stage prompt.")
+    parser.add_argument('--target_buffer_secs', type=float, default=1.5,
+                        help="(continuous_talk) Safety margin (giây audio) cần giữ trong TTS "
+                             "queue NGOÀI thời gian LLM dự kiến chạy. Fire khi remaining < "
+                             "(target + LLM_EMA). 1.5s = margin an toàn; threshold tổng thực "
+                             "tế tự thích nghi theo LLM thực tế trong session.")
+    parser.add_argument('--tts_chars_per_sec', type=float, default=14.0,
+                        help="(continuous_talk) Ước tính tốc độ TTS đọc (số ký tự / giây) để "
+                             "tính duration audio. Vieneu TTS tiếng Việt ~12-16 char/s. Điều "
+                             "chỉnh nếu thấy buffer estimate lệch (avatar khựng / queue đầy).")
+    parser.add_argument('--llm_duration_init', type=float, default=2.0,
+                        help="(continuous_talk) Initial LLM duration EMA (giây). Là prior "
+                             "trước khi đo được LLM thực tế. EMA α=0.3 update sau mỗi speak(), "
+                             "sau ~3-4 speak là đã hội tụ về tốc độ thực.")
+    parser.add_argument('--silent_sync_polls', type=int, default=5,
+                        help="(continuous_talk) Số idle_poll liên tiếp thấy avatar silent thì "
+                             "đồng bộ buffer estimate về now (giải kẹt khi estimate sai). "
+                             "5 × 0.1s = 0.5s silent thực sự.")
+    parser.add_argument('--speak_timeout_secs', type=float, default=30.0,
+                        help="Hard timeout cho mỗi LLM stream. Nếu LLM treo (vLLM OOM, "
+                             "network hỏng) quá timeout → cancel, release lock, brain fire "
+                             "stage kế. Phòng kẹt im lặng vĩnh viễn.")
 
     # ─── Studio Portal ─────────────────────────────────────────────────
     parser.add_argument('--studio_enabled', type=_str2bool, default=True,

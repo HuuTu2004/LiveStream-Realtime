@@ -59,14 +59,15 @@ class CommentHandler:
         self,
         catalog,
         script_engine=None,
-        batch_window_secs: int = 5,
+        batch_window_secs: float = 3.0,
         seen_history: int = 2000,
     ):
         self.catalog = catalog
         self.script_engine = script_engine
         self._speak_fn: Optional[SpeakFn] = None
         self._switch_product_cb: Optional[SwitchProductFn] = None
-        self._batch_window = batch_window_secs
+        # asyncio.sleep accept float — cho phép sub-second batch nếu cần.
+        self._batch_window = max(0.5, float(batch_window_secs))
 
         self._current_batch: list[str] = []
         self._lock = asyncio.Lock()

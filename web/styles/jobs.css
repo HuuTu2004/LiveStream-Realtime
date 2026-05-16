@@ -1,41 +1,73 @@
-/* Jobs list (Studio video panel) */
+/* Jobs list — Studio video panel. */
 
+#jobs-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
 #jobs-list .job {
-  background: rgba(255, 255, 255, 0.02);
-  backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  padding: var(--space-4);
-  margin-bottom: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: border-color var(--duration-fast) var(--ease-out);
 }
 #jobs-list .job:hover {
-  border-color: var(--glass-highlight);
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  transform: translateY(-2px);
+  border-color: var(--border-strong);
 }
 #jobs-list .job .head {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
   color: var(--text-soft);
-  margin-bottom: var(--space-1);
+  margin-bottom: var(--space-2);
 }
+#jobs-list .job .id {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+#jobs-list .job .kind {
+  color: var(--text-faint);
+  margin-left: var(--space-2);
+}
+#jobs-list .job .state-pill {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-overlay);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  font-family: var(--font-sans);
+}
+#jobs-list .job.running  .state-pill { color: var(--info);     background: var(--info-soft);    border-color: rgba(59, 130, 246, 0.35); }
+#jobs-list .job.queued   .state-pill { color: var(--text-muted); }
+#jobs-list .job.done     .state-pill { color: var(--success);  background: var(--success-soft); border-color: var(--success-ring); }
+#jobs-list .job.failed   .state-pill { color: var(--danger-hover); background: var(--danger-soft); border-color: rgba(239, 68, 68, 0.4); }
+
 #jobs-list .job .bar {
-  height: 6px;
+  height: 5px;
   background: var(--bg-overlay);
   border-radius: var(--radius-pill);
-  margin: var(--space-2) 0;
   overflow: hidden;
+  margin: var(--space-2) 0;
 }
 #jobs-list .job .bar > div {
   height: 100%;
   background: linear-gradient(90deg, var(--accent-dim), var(--accent));
-  box-shadow: 0 0 10px var(--accent);
   transition: width var(--duration-slow) var(--ease-out);
+  border-radius: inherit;
 }
-#jobs-list .job .meta { color: var(--text-faint); font-size: var(--text-2xs); }
-#jobs-list .job.done .bar > div { background: var(--success); }
-#jobs-list .job.failed .bar > div { background: var(--danger); }
+#jobs-list .job.done    .bar > div { background: var(--success); }
+#jobs-list .job.failed  .bar > div { background: var(--danger); }
+#jobs-list .job .meta {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+#jobs-list .job .meta .error { color: var(--danger-hover); }

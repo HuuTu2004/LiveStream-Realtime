@@ -97,13 +97,27 @@ function Send-AvatarViaTarSsh([string]$AvatarParent, [string]$AvatarId, [string]
   Write-Host "[tar] streaming avatar $AvatarId qua ssh (nhanh hơn scp cho many small files)..." -ForegroundColor Cyan
   $tarCmd = "tar -cf - -C `"$AvatarParent`" $AvatarId | ssh -i `"$KeyPath`" -o StrictHostKeyChecking=accept-new -p $Port $User@$InstanceHost `"tar -xf - -C $RemoteDir/data/avatars/`""
   # Dùng bash để chạy pipe (PowerShell native pipe không support binary stream tốt)
-  $bash = (Get-Command bash -ErrorAction SilentlyContinue).Source
-  if (-not $bash) { $bash = "C:\Program Files\Git\bin\bash.exe" }
-  if (-not (Test-Path $bash)) {
-    Write-Warning "[tar] bash không có — fallback scp -r (chậm hơn)"
+  # Ưu tiên Git Bash — Get-Command bash trên Windows thường trả về C:\Windows\System32\bash.exe
+  # (WSL stub) sẽ fail "execvpe(/bin/bash): No such file or directory" nếu chưa cài WSL distro.
+  $bash = $null
+  $gitBashCandidates = @(
+    'C:\Program Files\Git\bin\bash.exe',
+    'C:\Program Files (x86)\Git\bin\bash.exe',
+    "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe"
+  )
+  foreach ($cand in $gitBashCandidates) {
+    if (Test-Path $cand) { $bash = $cand; break }
+  }
+  if (-not $bash) {
+    $sysBash = (Get-Command bash -ErrorAction SilentlyContinue).Source
+    if ($sysBash -and $sysBash -notlike '*\System32\bash.exe') { $bash = $sysBash }
+  }
+  if (-not $bash) {
+    Write-Warning "[tar] Git Bash không có — fallback scp -r (chậm hơn)"
     Send-Scp (Join-Path $AvatarParent $AvatarId) "$RemoteDir/data/avatars/"
     return
   }
+  Write-Host "[tar] using bash: $bash" -ForegroundColor DarkGray
   & $bash -c $tarCmd
   if ($LASTEXITCODE -ne 0) { Write-Error "tar+ssh failed: exit $LASTEXITCODE"; exit $LASTEXITCODE }
   Write-Host "[tar] done" -ForegroundColor Green

@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>LiveTalking · Preview (OBS Capture)</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #fff;
+    }
+    body.idle { cursor: none; }
+    #canvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      background: #000;
+    }
+    #canvas[data-fit="contain"] { object-fit: contain; }
+    #canvas[data-fit="cover"]   { object-fit: cover; }
+
+    /* HUD only when ?hud=1 — hidden by default for clean OBS capture */
+    .hud {
+      position: fixed;
+      top: 12px; left: 12px;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(8px);
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: #fff;
+      z-index: 10;
+      pointer-events: none;
+    }
+    .hud .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+      box-shadow: 0 0 8px #ef4444;
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+    .hud .dot.off { background: #6b7388; box-shadow: none; animation: none; }
+    body.hud .hud { display: inline-flex; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.6; transform: scale(1.2); }
+    }
+
+    /* Splash / connecting state — visible until first frame arrives */
+    .splash {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      background:
+        radial-gradient(800px 400px at 50% 30%, rgba(99, 102, 241, 0.18), transparent 60%),
+        #000;
+      transition: opacity 400ms ease;
+      pointer-events: none;
+      z-index: 5;
+    }
+    .splash.hidden { opacity: 0; }
+    .splash .logo {
+      width: 56px; height: 56px;
+      border-radius: 12px;
+      background:
+        radial-gradient(circle at 30% 30%, #818cf8, transparent 60%),
+        linear-gradient(135deg, #4338ca, #6366f1);
+      box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.5), 0 8px 32px rgba(99, 102, 241, 0.4);
+      position: relative;
+    }
+    .splash .logo::after {
+      content: "";
+      position: absolute; inset: 16px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 0 12px rgba(255, 255, 255, 0.6);
+    }
+    .splash .title {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #c7c9d4;
+    }
+    .splash .msg {
+      font-size: 12px;
+      color: #8b93a7;
+      font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+    }
+    .splash .spinner {
+      width: 24px; height: 24px;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      border-top-color: #6366f1;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <div class="splash" id="splash">
+    <div class="logo"></div>
+    <div class="spinner"></div>
+    <div class="title">LiveTalking Preview</div>
+    <div class="msg" id="splash-msg">Đang kết nối stream…</div>
+  </div>
+
+  <div class="hud">
+    <span class="dot off" id="hud-dot"></span>
+    <span id="hud-label">offline</span>
+  </div>
+
+  <script>
+    // ─── URL params ────────────────────────────────────────────
+    // ?session=<id>   default 0   — session id for WSStream
+    // ?hud=1          default 0   — small LIVE pill in corner
+    // ?fit=contain|cover  default contain — letterbox vs. fill
+    // ?retry=1500     default 1500 — reconnect delay ms on error/close
+    const params = new URLSearchParams(location.search);
+    const SESSION = params.get("session") || "0";
+    const HUD     = params.get("hud") === "1";
+    const FIT     = params.get("fit") === "cover" ? "cover" : "contain";
+    const RETRY   = Math.max(300, parseInt(params.get("retry") || "1500", 10));
+
+    const canvas = document.getElementById("canvas");
+    const splash = document.getElementById("splash");
+    const splashMsg = document.getElementById("splash-msg");
+    const hudDot   = document.getElementById("hud-dot");
+    const hudLabel = document.getElementById("hud-label");
+
+    canvas.dataset.fit = FIT;
+    document.title = `LiveTalking · Preview (session=${SESSION})`;
+    if (HUD) document.body.classList.add("hud");
+
+    // ─── Idle cursor hide (after 2s of no mouse) ──────────────
+    let idleTimer;
+    const showCursor = () => {
+      document.body.classList.remove("idle");
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => document.body.classList.add("idle"), 2000);
+    };
+    document.addEventListener("mousemove", showCursor);
+    showCursor();
+
+    // ─── JSMpeg loader (same source as main app) ──────────────
+    function loadJSMpeg() {
+      return new Promise((resolve, reject) => {
+        if (typeof JSMpeg !== "undefined") return resolve();
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/gh/phoboslab/jsmpeg@master/jsmpeg.min.js";
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    // ─── Stream connect with auto-reconnect ───────────────────
+    let player = null;
+    let reconnectTimer = null;
+
+    function setState(state, text) {
+      hudDot.classList.toggle("off", state !== "live");
+      hudLabel.textContent = text;
+      if (state === "live") {
+        splash.classList.add("hidden");
+      } else {
+        splash.classList.remove("hidden");
+        splashMsg.textContent = text;
+      }
+    }
+
+    function destroyPlayer() {
+      if (player) {
+        try { player.destroy(); } catch {}
+        player = null;
+      }
+    }
+
+    function scheduleReconnect(reason) {
+      destroyPlayer();
+      setState("retry", `Mất kết nối — thử lại sau ${(RETRY / 1000).toFixed(1)}s · ${reason || ""}`);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, RETRY);
+    }
+
+    async function connect() {
+      try {
+        await loadJSMpeg();
+      } catch (e) {
+        scheduleReconnect("không load được JSMpeg");
+        return;
+      }
+
+      // Discover transport — same logic as the main UI
+      let wsUrl = null;
+      let virtualcam = false;
+      try {
+        const r = await fetch("/preview-info", { cache: "no-store" });
+        if (r.ok) {
+          const info = await r.json();
+          if (info.transport === "virtualcam") virtualcam = true;
+          else wsUrl = info.ws_url || null;
+        }
+      } catch {}
+
+      if (virtualcam) {
+        setState("error",
+          "Server đang dùng virtualcam — preview chạy ngoài browser. Capture trực tiếp camera ảo trong OBS.");
+        return; // do not reconnect — user must change transport
+      }
+
+      if (!wsUrl) {
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        wsUrl = `${proto}://${location.host}/wsstream/${encodeURIComponent(SESSION)}`;
+      }
+
+      setState("connecting", `Đang kết nối ${wsUrl}…`);
+
+      player = new JSMpeg.Player(wsUrl, {
+        canvas,
+        autoplay: true,
+        audio: true,
+        videoBufferSize: 1024 * 1024,
+        audioBufferSize: 256 * 1024,
+        onSourceEstablished: () => setState("live", `live · session ${SESSION}`),
+        onSourceCompleted: () => scheduleReconnect("stream kết thúc"),
+        onError: (err) => scheduleReconnect(typeof err === "string" ? err : "error"),
+      });
+    }
+
+    window.addEventListener("beforeunload", destroyPlayer);
+    connect();
+  </script>
+</body>
+</html>
