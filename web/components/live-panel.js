@@ -1,4 +1,7 @@
-// <live-panel> — Live tab: WSStream video (JSMpeg) + chat speak + comments + control + stats + product.
+// <live-panel> — Live console: WSStream preview + speak + comments console
+// + product catalog gallery (click to switch). The brain reads
+// catalog.current_product() on every fire, so switching here makes the
+// avatar talk about the new product from the next sentence onward.
 
 import { LiveElement } from "./shared/element.js";
 import { api, escapeHtml, escapeAttr, getSessionId } from "./shared/api.js";
@@ -13,11 +16,60 @@ const KPIS = [
   { id: "gifts",    label: "Quà",         icon: "gifts",    symbol: "🎁" },
 ];
 
+// Deterministic avatar tint per username — keeps the comment feed lively
+// without storing any extra state.
+const AVATAR_HUES = [199, 217, 264, 282, 326, 14, 35, 96, 162, 178];
+function hueFor(name) {
+  let h = 0;
+  for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+  return AVATAR_HUES[h % AVATAR_HUES.length];
+}
+function initialsOf(name) {
+  const s = String(name || "?").replace(/[^\p{L}\p{N}\s]/gu, "").trim();
+  if (!s) return "?";
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+// Extract a likely price hint from free-text product description.
+// Recognises "Giá: XYZ", "299.000đ", "299k", "$50", "1,5 triệu", "₫299.000".
+function extractPrice(text) {
+  if (!text) return "";
+  const m1 = text.match(/(?:gi[áa]|price)\s*[:：]\s*([^\n,;.]+)/i);
+  if (m1) return m1[1].trim().slice(0, 40);
+  const m2 = text.match(/\b\d{1,3}(?:[.,]\d{3})+\s*(?:đ|VNĐ|VND|₫)\b/i);
+  if (m2) return m2[0].trim();
+  const m3 = text.match(/\b\d+(?:[.,]\d+)?\s*(?:k|tri[ệe]u|tỷ|nghìn)\b/i);
+  if (m3) return m3[0].trim();
+  const m4 = text.match(/\$\s?\d+(?:[.,]\d+)?/);
+  if (m4) return m4[0].trim();
+  return "";
+}
+
+function timeAgo(ts) {
+  if (!ts) return "";
+  const t = typeof ts === "number" ? ts : Date.parse(ts);
+  if (!t) return "";
+  const sec = Math.max(1, Math.floor((Date.now() - t) / 1000));
+  if (sec < 60)    return sec + "s";
+  if (sec < 3600)  return Math.floor(sec / 60) + "m";
+  if (sec < 86400) return Math.floor(sec / 3600) + "h";
+  return Math.floor(sec / 86400) + "d";
+}
+
 class LivePanel extends LiveElement {
   constructor() {
     super();
-    this._jsmpeg = null;
-    this._liveWs = null;
+    this._jsmpeg   = null;
+    this._liveWs   = null;
+    this._wsClosedByUser  = false;
+    this._wsReconnectAttempt = 0;
+    this._wsReconnectTimer = null;
+    this._products = [];
+    this._currentProductId = null;
+    this._timeAgoInterval  = null;
+    this._lastStats        = {};
   }
 
   render() {
@@ -25,7 +77,7 @@ class LivePanel extends LiveElement {
       <div class="panel-head">
         <div class="title-block">
           <h2>Phiên livestream</h2>
-          <div class="subtitle">Preview avatar, điều khiển scrape TikTok và theo dõi tương tác theo thời gian thực.</div>
+          <div class="subtitle">Preview avatar · điều khiển scrape TikTok · pitch sản phẩm theo lựa chọn của bạn.</div>
         </div>
         <div class="actions">
           <span id="live-state-pill" class="pill off"><span class="status-dot"></span><span>Chưa live</span></span>
@@ -45,8 +97,8 @@ class LivePanel extends LiveElement {
           </div>`).join("")}
       </div>
 
+      <!-- Video + Comments console -->
       <div class="live-grid">
-        <!-- Left column: video + chat + comments -->
         <div class="live-main">
           <div class="card video-card">
             <div class="video-wrap">
@@ -82,12 +134,17 @@ class LivePanel extends LiveElement {
             </form>
             <div id="speak-status" class="status"></div>
           </div>
+        </div>
 
-          <div class="card">
+        <div class="live-side">
+          <div class="card comments-console">
             <div class="card-head">
               <div>
                 <h3>Bình luận trực tiếp</h3>
                 <span class="subtitle" id="comments-count">Đợi dữ liệu từ phiên live…</span>
+              </div>
+              <div class="actions">
+                <button id="btn-clear-comments" class="btn-ghost btn-small" title="Xóa hiển thị (giữ nguyên trên server)">Clear</button>
               </div>
             </div>
             <div id="comments-feed" class="comments-feed">
@@ -97,121 +154,132 @@ class LivePanel extends LiveElement {
               </div>
             </div>
           </div>
+
+          <div class="brain-strip" id="brain-strip">
+            <div class="item">
+              <span class="item-label">Stage</span>
+              <span class="item-value" id="stat-stage">—</span>
+            </div>
+            <span class="sep"></span>
+            <div class="item">
+              <span class="item-label">Phút live</span>
+              <span class="item-value"><span id="stat-minutes">0</span>'</span>
+            </div>
+            <span class="sep"></span>
+            <div class="item" style="flex:1;min-width:0">
+              <span class="item-label">Đang pitch</span>
+              <span class="item-value" id="stat-current-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</span>
+            </div>
+            <span class="pill" id="ws-indicator" style="margin-left:auto">
+              <span class="status-dot"></span>
+              <span>Đang kết nối…</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- On-Air spotlight -->
+      <div class="card on-air-card" id="on-air-card">
+        <div class="on-air-head">
+          <span class="label">On Air</span>
+          <span class="hint">AI đang nói về sản phẩm này · pick một thẻ bên dưới để đổi</span>
+        </div>
+        <div id="on-air-body">
+          <div class="on-air-empty">
+            <span class="empty-icon">📦</span>
+            Chưa chọn sản phẩm — AI sẽ pitch chung khi vào phiên.
+          </div>
+        </div>
+      </div>
+
+      <!-- Catalog gallery -->
+      <div class="card catalog-card">
+        <div class="card-head">
+          <div>
+            <h3>Catalog sản phẩm</h3>
+            <span class="subtitle">Click một thẻ → đổi sản phẩm đang bán. Đang ở sản phẩm nào, AI nói về sản phẩm đó.</span>
+          </div>
+          <div class="actions">
+            <button id="btn-refresh-catalog" class="btn-secondary btn-small">↻ Refresh</button>
+          </div>
+        </div>
+        <div class="catalog-grid" id="catalog-grid"></div>
+      </div>
+
+      <!-- Bottom controls -->
+      <div class="card-grid">
+        <div class="card control-card">
+          <div class="card-head">
+            <div>
+              <h3>Điều khiển phiên</h3>
+              <span class="subtitle">Kết nối scraper và khởi động brain bán hàng.</span>
+            </div>
+          </div>
+          <form id="live-form">
+            <div class="form-row">
+              <label>Platform
+                <select name="platform">
+                  <option value="tiktok">TikTok</option>
+                </select>
+              </label>
+              <label>Live ID (@username)
+                <input type="text" name="live_id" placeholder="@tenchannel hoặc tenchannel" required />
+              </label>
+            </div>
+            <div class="btn-row">
+              <button type="submit"  class="btn-primary" id="btn-live-start">▶ Bắt đầu Live</button>
+              <button type="button"  class="btn-stop"    id="btn-live-stop" hidden>■ Dừng Live</button>
+            </div>
+          </form>
+          <div id="live-status" class="status"></div>
         </div>
 
-        <!-- Right column: control + brain + product + manual -->
-        <div class="live-side">
-          <div class="card control-card">
-            <div class="card-head">
-              <div>
-                <h3>Điều khiển phiên</h3>
-                <span class="subtitle">Kết nối scraper và khởi động brain bán hàng.</span>
-              </div>
-            </div>
-            <form id="live-form">
-              <div class="form-row">
-                <label>Platform
-                  <select name="platform">
-                    <option value="tiktok">TikTok</option>
-                  </select>
-                </label>
-                <label>Live ID (@username)
-                  <input type="text" name="live_id" placeholder="@tenchannel hoặc tenchannel" required />
-                </label>
-              </div>
-              <div class="btn-row">
-                <button type="submit"  class="btn-primary" id="btn-live-start">▶ Bắt đầu Live</button>
-                <button type="button"  class="btn-stop"    id="btn-live-stop" hidden>■ Dừng Live</button>
-              </div>
-            </form>
-            <div id="live-status" class="status"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              <div>
-                <h3>Trạng thái brain</h3>
-                <span class="subtitle">Giai đoạn pitch và thời lượng phiên.</span>
-              </div>
-            </div>
-            <div class="brain-strip">
-              <div class="item">
-                <span class="item-label">Stage</span>
-                <span class="item-value" id="stat-stage">—</span>
-              </div>
-              <span class="sep"></span>
-              <div class="item">
-                <span class="item-label">Phút live</span>
-                <span class="item-value"><span id="stat-minutes">0</span>'</span>
-              </div>
+        <div class="card manual-comment-card">
+          <div class="card-head">
+            <div>
+              <h3>Gửi comment thủ công</h3>
+              <span class="subtitle">Inject comment vào brain — hữu ích để test luồng hỏi đáp.</span>
             </div>
           </div>
-
-          <div class="card product-card">
-            <div class="card-head">
-              <div>
-                <h3>Sản phẩm đang bán</h3>
-                <span class="subtitle">Đang được brain pitch trực tiếp.</span>
-              </div>
+          <form id="live-manual-form">
+            <div class="grid-2">
+              <input type="text" name="username" placeholder="Username" value="Khách lạ" />
+              <input type="text" name="text" placeholder="Nội dung bình luận…" required class="span-2" />
             </div>
-            <div id="current-product">
-              <div class="empty-state">
-                <span class="empty-icon">📦</span>
-                Chưa có sản phẩm hiện hành.
-              </div>
-            </div>
-            <h4>Chuyển sản phẩm</h4>
-            <form id="live-product-form">
-              <select name="product_id" id="live-product-select"></select>
-              <button type="submit" class="btn-secondary">Switch</button>
-            </form>
-          </div>
-
-          <div class="card manual-comment-card">
-            <div class="card-head">
-              <div>
-                <h3>Gửi comment thủ công</h3>
-                <span class="subtitle">Inject vào brain để test luồng xử lý.</span>
-              </div>
-            </div>
-            <form id="live-manual-form">
-              <div class="grid-2">
-                <input type="text" name="username" placeholder="Username" value="Khách lạ" />
-                <input type="text" name="text" placeholder="Nội dung bình luận…" required class="span-2" />
-              </div>
-              <button type="submit" class="btn-secondary btn-block">Gửi vào brain</button>
-            </form>
-          </div>
+            <button type="submit" class="btn-secondary btn-block">Gửi vào brain</button>
+          </form>
         </div>
       </div>
     `;
   }
 
   bind() {
-    this.on("#btn-conn",          "click",  () => this._connect());
-    this.on("#btn-disconn",       "click",  () => this._disconnect());
-    this.on("#btn-popout",        "click",  () => this._popoutForOBS());
-    this.on("#speak-form",        "submit", (e) => this._speak(e));
-    this.on("#speak-stop",        "click",  () => this._stopSpeak());
-    this.on("#live-form",         "submit", (e) => this._startLive(e));
-    this.on("#btn-live-stop",     "click",  () => this._stopLive());
-    this.on("#live-manual-form",  "submit", (e) => this._sendManual(e));
-    this.on("#live-product-form", "submit", (e) => this._switchProduct(e));
+    this.on("#btn-conn",            "click",  () => this._connect());
+    this.on("#btn-disconn",         "click",  () => this._disconnect());
+    this.on("#btn-popout",          "click",  () => this._popoutForOBS());
+    this.on("#speak-form",          "submit", (e) => this._speak(e));
+    this.on("#speak-stop",          "click",  () => this._stopSpeak());
+    this.on("#live-form",           "submit", (e) => this._startLive(e));
+    this.on("#btn-live-stop",       "click",  () => this._stopLive());
+    this.on("#live-manual-form",    "submit", (e) => this._sendManual(e));
+    this.on("#btn-refresh-catalog", "click",  () => this.refreshProducts());
+    this.on("#btn-clear-comments",  "click",  () => this._clearComments());
+    this.on("#catalog-grid",        "click",  (e) => this._onCatalogClick(e));
     window.addEventListener("beforeunload", () => this._disconnect());
   }
 
   async afterMount() {
-    this.refreshProducts();
+    await this.refreshProducts();
+    // Open the feed WS unconditionally — when scraper isn't running yet the
+    // server replies with {running: false} and stays open, ready to push
+    // events the moment Start Live is clicked. No race between start + WS.
+    this._openWs();
     const j = await api(`/live/state?sessionid=${encodeURIComponent(getSessionId())}`);
-    if (j.code === 0 && j.data.running) {
-      this._setRunning(true);
-      this._openWs();
-    }
+    if (j.code === 0 && j.data.running) this._setRunning(true);
+    this._timeAgoInterval = setInterval(() => this._refreshTimeAgo(), 15000);
   }
 
-  onActivate() {
-    this.refreshProducts();
-  }
+  onActivate() { this.refreshProducts(); }
 
   // ─── WSStream preview (JSMpeg) ──────────────────────────────────────
   async _connect() {
@@ -279,8 +347,6 @@ class LivePanel extends LiveElement {
   }
 
   _popoutForOBS() {
-    // Open a chromeless window targeted at /preview.html so OBS can grab it as
-    // a Window Capture source. 1280x720 default; user can resize before adding to OBS.
     const session = encodeURIComponent(getSessionId());
     const url = `preview.html?session=${session}&fit=contain`;
     const w = 1280, h = 720;
@@ -332,7 +398,7 @@ class LivePanel extends LiveElement {
     this._setStatus("#speak-status", "Đã ngắt", "warn");
   }
 
-  // ─── TikTok scraper control ──────────────────────────────────────
+  // ─── Live control ────────────────────────────────────────────────
   async _startLive(e) {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -346,7 +412,8 @@ class LivePanel extends LiveElement {
     if (j.code === 0) {
       this._setStatus("#live-status", `OK — đang cào @${payload.live_id}`, "ok");
       this._setRunning(true);
-      this._openWs();
+      // WS is already open + subscribed — listener publish hook attaches now,
+      // events from the scraper will start flowing within ms.
     } else this._setStatus("#live-status", j.msg, "error");
   }
 
@@ -355,7 +422,8 @@ class LivePanel extends LiveElement {
     if (j.code === 0) {
       this._setStatus("#live-status", "Đã dừng", "warn");
       this._setRunning(false);
-      this._closeWs();
+      // Keep WS open so the user can see the running=false state echo and
+      // restart without a reconnect round-trip.
     } else toast(j.msg, "error");
   }
 
@@ -372,22 +440,78 @@ class LivePanel extends LiveElement {
   }
 
   _openWs() {
-    this._closeWs();
+    this._wsClosedByUser = false;
+    this._connectWs();
+  }
+
+  _connectWs() {
+    if (this._wsReconnectTimer) { clearTimeout(this._wsReconnectTimer); this._wsReconnectTimer = null; }
+    if (this._liveWs && this._liveWs.readyState <= 1) {
+      try { this._liveWs.close(); } catch {}
+    }
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    this._liveWs = new WebSocket(`${proto}://${location.host}/live/feed?sessionid=${encodeURIComponent(getSessionId())}`);
-    this._liveWs.onmessage = (ev) => {
+    const url = `${proto}://${location.host}/live/feed?sessionid=${encodeURIComponent(getSessionId())}`;
+    const ws = new WebSocket(url);
+    this._liveWs = ws;
+    this._setWsIndicator("connecting");
+
+    ws.onopen = () => {
+      this._wsReconnectAttempt = 0;
+      this._setWsIndicator("open");
+    };
+    ws.onmessage = (ev) => {
       try {
         const m = JSON.parse(ev.data);
-        if (m.event === "state")    this._renderState(m.data);
+        if      (m.event === "state")    this._renderState(m.data);
+        else if (m.event === "stat")     this._renderStat(m.data);
         else if (m.event === "comments") this._prependComments(m.data);
       } catch {}
     };
-    this._liveWs.onclose = () => { this._liveWs = null; };
-  }
-  _closeWs() {
-    if (this._liveWs) { try { this._liveWs.close(); } catch {} this._liveWs = null; }
+    ws.onclose = () => {
+      this._liveWs = null;
+      if (this._wsClosedByUser) {
+        this._setWsIndicator("closed");
+        return;
+      }
+      // Exponential backoff: 1, 2, 4, 8, 15 (cap), 15, ...
+      const delay = Math.min(15000, 1000 * Math.pow(2, this._wsReconnectAttempt));
+      this._wsReconnectAttempt++;
+      this._setWsIndicator("reconnect", Math.round(delay / 1000));
+      this._wsReconnectTimer = setTimeout(() => this._connectWs(), delay);
+    };
+    ws.onerror = () => {
+      // onclose fires after onerror — let the close handler schedule the
+      // reconnect. Just surface visually.
+      this._setWsIndicator("reconnect");
+    };
   }
 
+  _closeWs() {
+    this._wsClosedByUser = true;
+    if (this._wsReconnectTimer) { clearTimeout(this._wsReconnectTimer); this._wsReconnectTimer = null; }
+    if (this._liveWs) { try { this._liveWs.close(); } catch {} this._liveWs = null; }
+    this._setWsIndicator("closed");
+  }
+
+  _setWsIndicator(state, secs) {
+    const el = this.$("#ws-indicator");
+    if (!el) return;
+    if (state === "open") {
+      el.className = "pill success";
+      el.querySelector("span:last-child").textContent = "Realtime";
+    } else if (state === "connecting") {
+      el.className = "pill";
+      el.querySelector("span:last-child").textContent = "Đang kết nối…";
+    } else if (state === "reconnect") {
+      el.className = "pill warn";
+      el.querySelector("span:last-child").textContent = secs ? `Reconnect ${secs}s…` : "Reconnecting…";
+    } else {
+      el.className = "pill off";
+      el.querySelector("span:last-child").textContent = "Offline";
+    }
+  }
+
+  // ─── State rendering ─────────────────────────────────────────────
   _renderState(st) {
     if (!st) return;
     const ps = st.platform_stats || {};
@@ -407,36 +531,160 @@ class LivePanel extends LiveElement {
       const el = this.$(s);
       if (el) el.textContent = v;
     }
+    this._lastStats = { ...ps };
     this.$("#comments-count").textContent = ps.comments_total
-      ? `${fmt(ps.comments_total)} tổng`
+      ? `${fmt(ps.comments_total)} tổng · ${fmt(ps.gifts_total || 0)} quà`
       : "Đợi dữ liệu từ phiên live…";
 
     const p = brain.current_product;
-    const prodEl = this.$("#current-product");
-    if (p && p.id) {
-      prodEl.innerHTML = `
-        <div class="product-block">
-          <div class="p-row"><span class="label">ID</span><code>${escapeHtml(p.id)}</code></div>
-          <div class="p-row"><span class="label">Tên</span><span class="p-name">${escapeHtml(p.name || "—")}</span></div>
-          <div class="p-row"><span class="label">Giá</span><span class="p-price">${escapeHtml(p.price || "—")}</span></div>
-        </div>`;
-    } else {
-      prodEl.innerHTML = `<div class="empty-state"><span class="empty-icon">📦</span>Chưa có sản phẩm hiện hành.</div>`;
+    const newId = p?.id || null;
+    if (newId !== this._currentProductId) {
+      this._currentProductId = newId;
+      this._renderCatalogActiveState();
     }
+    this._renderOnAir(p);
     this._setRunning(!!st.running);
   }
 
+  _renderStat(stats) {
+    // Lightweight delta push (likes/joins/follows/shares/gifts/viewers)
+    // — bypasses the full state render so a 50/s like flood doesn't trash
+    // the rest of the panel.
+    if (!stats) return;
+    this._lastStats = { ...this._lastStats, ...stats };
+    const fmt = (n) => (n === null || n === undefined ? "—" : Number(n).toLocaleString("vi-VN"));
+    const map = {
+      "#stat-viewers":  fmt(stats.viewer_count ?? this._lastStats.viewer_count),
+      "#stat-comments": fmt(stats.comments_total ?? this._lastStats.comments_total ?? 0),
+      "#stat-likes":    fmt(stats.likes_total ?? this._lastStats.likes_total ?? 0),
+      "#stat-shares":   fmt(stats.shares_total ?? this._lastStats.shares_total ?? 0),
+      "#stat-follows":  fmt(stats.follows_total ?? this._lastStats.follows_total ?? 0),
+      "#stat-gifts":    fmt(stats.gifts_total ?? this._lastStats.gifts_total ?? 0),
+    };
+    for (const [s, v] of Object.entries(map)) {
+      const el = this.$(s);
+      if (el) el.textContent = v;
+    }
+  }
+
+  _renderOnAir(currentMini) {
+    const body = this.$("#on-air-body");
+    const nameEl = this.$("#stat-current-name");
+    if (!currentMini || !currentMini.id) {
+      body.innerHTML = `
+        <div class="on-air-empty">
+          <span class="empty-icon">📦</span>
+          Chưa chọn sản phẩm — AI sẽ pitch chung khi vào phiên.
+        </div>`;
+      nameEl.textContent = "—";
+      return;
+    }
+    // Resolve full product (catalog has the long text). Mini state from
+    // backend only carries id/name/price.
+    const full = this._products.find((x) => String(x.id) === String(currentMini.id)) || {};
+    const name  = currentMini.name || full.name || currentMini.id;
+    const price = currentMini.price || extractPrice(full.text) || "";
+    const desc  = (full.text || full.description || "").trim();
+    const idx   = this._products.findIndex((x) => String(x.id) === String(currentMini.id));
+
+    nameEl.textContent = name;
+    body.innerHTML = `
+      <div class="on-air-body">
+        <div class="info">
+          <div class="name">${escapeHtml(name)}</div>
+          <div class="id-row">
+            <code>${escapeHtml(currentMini.id)}</code>
+            ${idx >= 0 ? `<span>· vị trí #${idx + 1}</span>` : ""}
+            ${price ? `<span class="price-chip">${escapeHtml(price)}</span>` : ""}
+          </div>
+          <div class="desc">${escapeHtml(desc || "Chưa có mô tả chi tiết.")}</div>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn-primary" data-action="intro" data-id="${escapeAttr(currentMini.id)}">
+            🎙 Giới thiệu lại ngay
+          </button>
+          <button type="button" class="btn-secondary" data-action="cta" data-id="${escapeAttr(currentMini.id)}">
+            🛒 Chốt đơn / kêu mua
+          </button>
+          <button type="button" class="btn-ghost" data-action="next">
+            → Sản phẩm kế tiếp
+          </button>
+        </div>
+      </div>
+    `;
+    body.querySelectorAll("button[data-action]").forEach((b) =>
+      b.addEventListener("click", (e) => this._onOnAirAction(e.currentTarget))
+    );
+  }
+
+  async _onOnAirAction(btn) {
+    const action = btn.dataset.action;
+    if (action === "intro") {
+      const p = this._products.find((x) => String(x.id) === String(this._currentProductId));
+      if (!p) return;
+      const text = `Tiếp theo mình giới thiệu sản phẩm ${p.name || p.id}. Mọi người chú ý phần mô tả nha.`;
+      await api("/human", { method: "POST", body: { type: "echo", text, sessionid: getSessionId() } });
+      toast("Đã đẩy intro vào TTS", "ok");
+    } else if (action === "cta") {
+      const p = this._products.find((x) => String(x.id) === String(this._currentProductId));
+      if (!p) return;
+      const text = `Còn vài suất ưu đãi ${p.name || p.id}, mọi người chốt đơn ngay trong giỏ hàng nha!`;
+      await api("/human", { method: "POST", body: { type: "echo", text, sessionid: getSessionId() } });
+      toast("Đã đẩy CTA", "ok");
+    } else if (action === "next") {
+      if (!this._products.length) return;
+      const idx = this._products.findIndex((x) => String(x.id) === String(this._currentProductId));
+      const next = this._products[(idx + 1) % this._products.length];
+      this._switchTo(next.id);
+    }
+  }
+
+  // ─── Comments feed ───────────────────────────────────────────────
   _prependComments(items) {
     if (!items || !items.length) return;
     const feed = this.$("#comments-feed");
     if (feed.querySelector(".empty-state")) feed.innerHTML = "";
     for (const c of items) {
-      const div = document.createElement("div");
-      div.className = "comment-row" + (c.type === "gift" ? " gift" : "") + (c.type === "like" ? " like" : "");
-      div.innerHTML = `<span class="u">${escapeHtml(c.username)}</span><span class="t">${escapeHtml(c.text)}</span>`;
-      feed.insertBefore(div, feed.firstChild);
+      const node = this._renderComment(c);
+      feed.insertBefore(node, feed.firstChild);
     }
-    while (feed.children.length > 120) feed.removeChild(feed.lastChild);
+    while (feed.children.length > 200) feed.removeChild(feed.lastChild);
+  }
+
+  _renderComment(c) {
+    const div = document.createElement("div");
+    const cls = ["comment-row"];
+    if (c.type === "gift") cls.push("gift");
+    else if (c.type === "like") cls.push("like");
+    div.className = cls.join(" ");
+    const hue = hueFor(c.username);
+    const initials = initialsOf(c.username);
+    const ts = c.ts || c.timestamp || Date.now();
+    div.dataset.ts = ts;
+    div.innerHTML = `
+      <span class="avatar-circle" style="background:hsl(${hue}, 60%, 48%)" aria-hidden="true">${escapeHtml(initials)}</span>
+      <div class="comment-body">
+        <span class="u">${escapeHtml(c.username || "")}</span>
+        <span class="t">${escapeHtml(c.text || "")}</span>
+      </div>
+      <span class="comment-time" data-ts="${ts}">${timeAgo(ts)}</span>
+    `;
+    return div;
+  }
+
+  _refreshTimeAgo() {
+    for (const el of this.querySelectorAll(".comment-time[data-ts]")) {
+      el.textContent = timeAgo(+el.dataset.ts);
+    }
+  }
+
+  _clearComments() {
+    const feed = this.$("#comments-feed");
+    feed.innerHTML = `
+      <div class="empty-state">
+        <span class="empty-icon">💬</span>
+        Đã xoá hiển thị. Comment mới sẽ tiếp tục đổ về.
+      </div>`;
   }
 
   async _sendManual(e) {
@@ -450,24 +698,86 @@ class LivePanel extends LiveElement {
     else toast(j.msg, "error");
   }
 
-  async _switchProduct(e) {
-    e.preventDefault();
-    const pid = e.target.product_id.value;
-    const j = await api("/live/product/switch", {
-      method: "POST",
-      body: { sessionid: getSessionId(), product_id: pid },
-    });
-    if (j.code === 0) toast("Đã chuyển sản phẩm", "ok"); else toast(j.msg, "error");
-  }
-
+  // ─── Catalog (product gallery + switch) ──────────────────────────
   async refreshProducts() {
     const j = await api("/studio/products");
     if (j.code !== 0) return;
-    const sel = this.$("#live-product-select");
-    if (!sel) return;
-    sel.innerHTML = (j.data.products || []).map((p) =>
-      `<option value="${escapeAttr(p.id)}">${escapeHtml(p.id)} — ${escapeHtml(p.name || "")}</option>`
-    ).join("");
+    this._products = j.data.products || [];
+    this._renderCatalog();
+  }
+
+  _renderCatalog() {
+    const grid = this.$("#catalog-grid");
+    if (!grid) return;
+    if (!this._products.length) {
+      grid.innerHTML = `
+        <div class="catalog-empty">
+          <span class="empty-state" style="margin:0">
+            <span class="empty-icon">📦</span>
+            Chưa có sản phẩm — vào tab <b>Sản phẩm</b> tạo thẻ mới.
+          </span>
+        </div>`;
+      return;
+    }
+    grid.innerHTML = this._products.map((p, i) => {
+      const active = String(p.id) === String(this._currentProductId);
+      const text  = p.text || p.description || "";
+      const price = extractPrice(text);
+      return `
+        <button type="button" class="product-tile${active ? " active" : ""}" data-id="${escapeAttr(p.id)}">
+          <div class="tile-head">
+            <span class="index-badge">#${i + 1}</span>
+            <span class="on-air-flag">On Air</span>
+          </div>
+          <div class="tile-name">${escapeHtml(p.name || p.id)}</div>
+          ${price ? `<div class="tile-price">${escapeHtml(price)}</div>` : ""}
+          <div class="tile-desc">${escapeHtml(text.slice(0, 160))}</div>
+          <div class="tile-footer">
+            <code>${escapeHtml(p.id)}</code>
+            <span class="tile-cta">Đặt làm on-air →</span>
+          </div>
+        </button>`;
+    }).join("");
+  }
+
+  _renderCatalogActiveState() {
+    for (const tile of this.querySelectorAll(".product-tile")) {
+      const isActive = String(tile.dataset.id) === String(this._currentProductId);
+      tile.classList.toggle("active", isActive);
+    }
+  }
+
+  _onCatalogClick(e) {
+    const tile = e.target.closest(".product-tile");
+    if (!tile) return;
+    const id = tile.dataset.id;
+    if (!id) return;
+    if (String(id) === String(this._currentProductId)) {
+      toast("Sản phẩm này đã đang on-air", "warn");
+      return;
+    }
+    this._switchTo(id);
+  }
+
+  async _switchTo(productId) {
+    // Optimistic UI: mark active immediately so the user gets feedback even
+    // before the WS state echoes back.
+    this._currentProductId = productId;
+    this._renderCatalogActiveState();
+    const local = this._products.find((x) => String(x.id) === String(productId));
+    if (local) this._renderOnAir({ id: local.id, name: local.name, price: extractPrice(local.text || "") });
+
+    const j = await api("/live/product/switch", {
+      method: "POST",
+      body: { sessionid: getSessionId(), product_id: productId },
+    });
+    if (j.code === 0) {
+      const name = (local && local.name) || productId;
+      toast(`Đang chuyển — AI sẽ nói về "${name}" từ câu kế tiếp`, "ok");
+    } else {
+      toast(j.msg || "Không chuyển được sản phẩm", "error");
+      // Roll back optimistic state on next WS tick (it'll re-sync automatically).
+    }
   }
 
   _setStatus(sel, msg, type = "") {
@@ -480,6 +790,7 @@ class LivePanel extends LiveElement {
   beforeUnmount() {
     this._disconnect();
     this._closeWs();
+    if (this._timeAgoInterval) clearInterval(this._timeAgoInterval);
   }
 }
 

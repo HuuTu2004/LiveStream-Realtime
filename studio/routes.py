@@ -11,7 +11,7 @@ import shutil
 from aiohttp import web, WSMsgType
 
 from .job_registry import init_registry, get_registry
-from . import avatar_pipeline, voice_pipeline, gesture_pipeline
+from . import avatar_pipeline, voice_pipeline, gesture_pipeline, voice_library
 
 log = logging.getLogger(__name__)
 
@@ -408,6 +408,184 @@ async def job_ws(request):
     return ws
 
 
+# ─── Voice library (clone giọng độc lập với avatar) ───────────────────
+
+async def voices_list(request):
+    try:
+        opt = _opt(request)
+        items = voice_library.list_voices()
+        active_id = voice_library.current_active(opt) if opt else None
+        for v in items:
+            v["active"] = (v.get("id") == active_id)
+        return ok({"voices": items, "active_id": active_id})
+    except Exception as e:
+        log.exception("voices_list")
+        return err(str(e))
+
+
+async def voices_upload(request):
+    """multipart: file (wav), name, text (transcript), [voice_id]"""
+    try:
+        reader = await request.multipart()
+        name = None
+        transcript = ""
+        wav_bytes = None
+        voice_id = None
+        async for field in reader:
+            if field.name == "name":
+                name = (await field.text()).strip()
+            elif field.name == "text":
+                transcript = await field.text()
+            elif field.name == "voice_id":
+                voice_id = (await field.text()).strip() or None
+            elif field.name == "file":
+                wav_bytes = await field.read(decode=False)
+        if not name or not wav_bytes:
+            return err("missing name or file")
+        meta = voice_library.save_voice(name, wav_bytes, transcript, voice_id=voice_id)
+        return ok(meta)
+    except ValueError as e:
+        return err(str(e))
+    except Exception as e:
+        log.exception("voices_upload")
+        return err(str(e))
+
+
+async def voices_delete(request):
+    try:
+        vid = request.match_info["voice_id"]
+        ok_flag = voice_library.delete_voice(vid)
+        if not ok_flag:
+            return err("voice not found", status=404)
+        # Nếu xóa voice đang active → clear opt để tránh ref tới file đã mất
+        opt = _opt(request)
+        if opt and voice_library.current_active(opt) == vid:
+            opt.vieneu_ref_audio = ""
+            opt.vieneu_ref_text = ""
+        return ok()
+    except Exception as e:
+        log.exception("voices_delete")
+        return err(str(e))
+
+
+async def voices_activate(request):
+    """POST {voice_id} → set opt.vieneu_ref_audio/ref_text. Brain auto-restart."""
+    try:
+        params = await request.json()
+        vid = (params.get("voice_id") or "").strip()
+        if not vid:
+            return err("missing voice_id")
+        opt = _opt(request)
+        if opt is None:
+            return err("opt not initialized")
+        meta = voice_library.activate_voice(opt, vid)
+
+        # Persist vào settings.json để lần khởi động kế tiếp giữ active voice
+        try:
+            from server.config_routes import load_settings_file, save_settings_file
+            saved = load_settings_file()
+            saved["vieneu_ref_audio"] = opt.vieneu_ref_audio
+            saved["vieneu_ref_text"] = opt.vieneu_ref_text
+            saved["vieneu_voice_id"] = ""
+            save_settings_file(saved)
+        except Exception:
+            log.exception("persist active voice to settings.json")
+
+        # Brain auto-reload nếu đang chạy
+        brain_restarted = False
+        try:
+            from brain.brain_manager import _brains
+            for sid, brain in list(_brains.items()):
+                if brain._running:
+                    await brain.stop()
+                    brain.__init__(opt, brain.avatar_session)
+                    await brain.start()
+                    brain_restarted = True
+        except Exception:
+            log.exception("brain restart after voice activate")
+
+        return ok({"activated": meta, "brain_restarted": brain_restarted})
+    except KeyError as e:
+        return err(str(e), status=404)
+    except Exception as e:
+        log.exception("voices_activate")
+        return err(str(e))
+
+
+async def voices_ref(request):
+    """Stream lại file ref.wav gốc cho player browser."""
+    try:
+        vid = request.match_info["voice_id"]
+        ref_wav, _ = voice_library.get_ref_paths(vid)
+        if not os.path.exists(ref_wav):
+            return web.Response(status=404, text="not found")
+        return web.FileResponse(ref_wav, headers={"Content-Type": "audio/wav"})
+    except Exception as e:
+        log.exception("voices_ref")
+        return err(str(e))
+
+
+async def voices_preview(request):
+    """POST {voice_id, text} → WAV bytes synthesize bằng TTS hiện hành."""
+    try:
+        params = await request.json()
+        vid = (params.get("voice_id") or "").strip()
+        text = params.get("text") or ""
+        if not vid:
+            return err("missing voice_id")
+        opt = _opt(request)
+
+        import asyncio
+        loop = asyncio.get_event_loop()
+        wav_bytes = await loop.run_in_executor(
+            None, voice_library.synth_preview, opt, vid, text
+        )
+        return web.Response(body=wav_bytes, headers={"Content-Type": "audio/wav"})
+    except KeyError as e:
+        return err(str(e), status=404)
+    except RuntimeError as e:
+        return err(str(e))
+    except Exception as e:
+        log.exception("voices_preview")
+        return err(str(e))
+
+
+async def voices_preview_clone(request):
+    """multipart: file (audio chưa save), text (transcript), sample_text (text test).
+
+    Test quality clone TRƯỚC khi commit save vào library. Audio không persist.
+    Trả WAV bytes synthesize bằng audio đó như reference.
+    """
+    try:
+        reader = await request.multipart()
+        wav_bytes = None
+        ref_text = ""
+        sample_text = ""
+        async for field in reader:
+            if field.name == "file":
+                wav_bytes = await field.read(decode=False)
+            elif field.name == "text":
+                ref_text = await field.text()
+            elif field.name == "sample_text":
+                sample_text = await field.text()
+        if not wav_bytes:
+            return err("missing file")
+
+        import asyncio
+        loop = asyncio.get_event_loop()
+        wav_out = await loop.run_in_executor(
+            None, voice_library.synth_preview_adhoc, wav_bytes, ref_text, sample_text
+        )
+        return web.Response(body=wav_out, headers={"Content-Type": "audio/wav"})
+    except ValueError as e:
+        return err(str(e))
+    except RuntimeError as e:
+        return err(str(e))
+    except Exception as e:
+        log.exception("voices_preview_clone")
+        return err(str(e))
+
+
 # ─── Setup ─────────────────────────────────────────────────────────────
 
 def setup_studio_routes(app):
@@ -423,9 +601,18 @@ def setup_studio_routes(app):
     app.router.add_post("/studio/avatar/train", avatar_train)
     app.router.add_post("/studio/avatar/delete", avatar_delete)
 
-    # Voice
+    # Voice (legacy per-avatar)
     app.router.add_post("/studio/voice/upload", voice_upload)
     app.router.add_post("/studio/voice/delete", voice_delete)
+
+    # Voice library (đa giọng, decoupled khỏi avatar)
+    app.router.add_get("/studio/voices", voices_list)
+    app.router.add_post("/studio/voices/upload", voices_upload)
+    app.router.add_delete("/studio/voices/{voice_id}", voices_delete)
+    app.router.add_get("/studio/voices/{voice_id}/ref", voices_ref)
+    app.router.add_post("/studio/voices/activate", voices_activate)
+    app.router.add_post("/studio/voices/preview", voices_preview)
+    app.router.add_post("/studio/voices/preview_clone", voices_preview_clone)
 
     # Gesture
     app.router.add_get("/studio/gestures", gesture_list)

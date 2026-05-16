@@ -373,13 +373,21 @@ class VieNeuTTS(BaseTTS):
 
     # ------------------------------------------------------------------
     def _stream_one(self, text: str, voice_id: str, ref_audio: str, ref_text: str):
-        """Generator yielding pcm_24k chunks từ vieneu.infer_stream."""
+        """Generator yielding pcm_24k chunks từ vieneu.infer_stream.
+
+        Theo chuẩn project (cùng vieneu_http + vieneu_server): ưu tiên voice.pkl
+        cạnh ref_audio (pre-encoded bởi voice_library / encode_voice.py) trước
+        khi fallback encode_reference runtime.
+        """
         with self._infer_lock:
             kwargs = {"text": text}
             if voice_id:
                 kwargs["voice"] = self._singleton.get_preset_voice(voice_id)
             elif ref_audio and os.path.exists(ref_audio):
-                if self.mode in ("turbo",):
+                voice_dict = self._try_load_voice_pkl(ref_audio, ref_text)
+                if voice_dict is not None:
+                    kwargs["voice"] = voice_dict
+                elif self.mode == "turbo":
                     kwargs["voice"] = self._singleton.encode_reference(ref_audio)
                 else:
                     kwargs["ref_audio"] = ref_audio
@@ -388,6 +396,42 @@ class VieNeuTTS(BaseTTS):
             # vieneu.infer_stream là generator → yield chunk-by-chunk
             for chunk in self._singleton.tts.infer_stream(**kwargs):
                 yield self._to_float32_mono(chunk)
+
+    def _try_load_voice_pkl(self, ref_audio: str, ref_text: str):
+        """Load voice.pkl cạnh ref_audio nếu format khớp mode hiện tại.
+
+        Format vieneu_server convention: {ref_codes, ref_text, mode?, codec_repo?}.
+        Trả về dict {codes, text} cho infer_stream(voice=...) hoặc None nếu skip.
+        """
+        # Check both: <basename>.pkl và <dir>/voice.pkl
+        base = os.path.splitext(ref_audio)[0]
+        candidates = [f"{base}.pkl", os.path.join(os.path.dirname(ref_audio), "voice.pkl")]
+        pkl_path = next((p for p in candidates if p and os.path.exists(p)), None)
+        if not pkl_path:
+            return None
+
+        try:
+            import pickle
+            with open(pkl_path, "rb") as f:
+                vd = pickle.load(f)
+            # Validate mode match (nếu pkl có tag) — codes format khác nhau giữa
+            # turbo (ONNX embedding 128-dim) vs standard/remote (torch int tokens)
+            saved_mode = vd.get("mode")
+            if saved_mode and saved_mode != self.mode:
+                logger.warning(
+                    f"[VieNeu] voice.pkl mode={saved_mode} ≠ current={self.mode}, "
+                    f"fallback runtime encode: {pkl_path}"
+                )
+                return None
+            codes = vd.get("ref_codes") if "ref_codes" in vd else vd.get("codes")
+            text = vd.get("ref_text") or vd.get("text") or ref_text
+            if codes is None:
+                return None
+            logger.debug(f"[VieNeu] loaded voice.pkl: {pkl_path}")
+            return {"codes": codes, "text": text}
+        except Exception:
+            logger.exception(f"[VieNeu] voice.pkl load failed: {pkl_path}")
+            return None
 
     def _drain_buffer(self, buf: np.ndarray, text: str, textevent: dict, started: bool) -> np.ndarray:
         """Emit hết chunks (self.chunk samples) từ buf, return remainder."""

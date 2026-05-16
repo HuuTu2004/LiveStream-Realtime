@@ -140,50 +140,124 @@ async def live_product_switch(request):
 
 
 async def live_feed_ws(request):
-    """WebSocket: stream state + comment events realtime cho UI.
+    """Realtime WebSocket: subscribe vào live event bus, push trực tiếp tới UI.
 
-    Server → client (3s interval):
-      {"event":"state","data":{...live.state()}}
-      {"event":"comments","data":[{type,username,text,ts}, ...]}  (diff mới)
+    Server → client:
+      {"event":"state",    "data":{...live.state()}}            # 1s snapshot
+      {"event":"comments", "data":[{type,username,text,ts},...]}# push as-it-happens
+      {"event":"stat",     "data":{...platform_stats}}          # KPI delta push
+
+    State snapshot mỗi 1s vừa là catch-up cho client mới connect, vừa đồng bộ
+    `running` / `current_product` / `stage`. Comments/stats không đợi tick này
+    — listener publish ngay khi event tới.
     """
     sessionid = str(request.query.get("sessionid", "0"))
     ws = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(request)
 
-    last_comment_count = 0
+    from brain.live_manager import get_live
+
+    # Shared mutable subscription state. The state loop may subscribe lazily
+    # once a LiveManager appears (user clicks Start Live after WS opens).
+    sub = {"live": None, "queue": None}
+
+    async def _attach_if_ready():
+        if sub["live"] is not None:
+            return
+        live2 = get_live(sessionid)
+        if live2 is None:
+            return
+        q = live2.subscribe()
+        sub["live"] = live2
+        sub["queue"] = q
+        # Wake the event loop so it starts draining the new queue.
+        nonlocal_event.set()
+        # Send catch-up snapshot + buffered comments.
+        try:
+            await ws.send_json({"event": "state", "data": live2.state()})
+            recent = live2.recent_comments(50)
+            if recent:
+                await ws.send_json({"event": "comments", "data": list(reversed(recent))})
+        except Exception:
+            log.exception("live_feed_ws catch-up send")
+
+    nonlocal_event = asyncio.Event()
+
+    # Initial state — may be None pre-start; the state loop will subscribe
+    # later if/when the LiveManager appears.
     try:
-        while not ws.closed:
-            from brain.live_manager import get_live
-            live = get_live(sessionid)
-            if live is None:
-                await ws.send_json({"event": "state", "data": {"running": False, "sessionid": sessionid}})
-            else:
-                state = live.state()
-                await ws.send_json({"event": "state", "data": state})
-
-                # Diff comments
-                recent = live.recent_comments(100)
-                if recent:
-                    # recent đã sort newest first; lấy phần mới (vượt last_count)
-                    total = state.get("platform_stats", {}).get("comments_total", 0) + \
-                            state.get("platform_stats", {}).get("gifts_total", 0)
-                    if total > last_comment_count:
-                        new_count = total - last_comment_count
-                        new_items = recent[:max(0, new_count)]
-                        last_comment_count = total
-                        if new_items:
-                            await ws.send_json({"event": "comments", "data": new_items})
-
-            try:
-                msg = await asyncio.wait_for(ws.receive(), timeout=3.0)
-                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
-                    break
-            except asyncio.TimeoutError:
-                pass
-    except (ConnectionResetError, asyncio.CancelledError):
-        pass
+        live0 = get_live(sessionid)
+        if live0 is None:
+            await ws.send_json({"event": "state", "data": {"running": False, "sessionid": sessionid}})
+        else:
+            await _attach_if_ready()
     except Exception:
-        log.exception("live_feed_ws")
+        log.exception("live_feed_ws initial send")
+
+    async def push_state_loop():
+        """1s snapshot ticker. Also lazily attaches subscription if the
+        LiveManager appears mid-session, and detects when it disappears
+        (e.g. user clicked Stop Live)."""
+        try:
+            while not ws.closed:
+                await asyncio.sleep(1.0)
+                if sub["live"] is None:
+                    await _attach_if_ready()
+                live2 = sub["live"] or get_live(sessionid)
+                if live2 is None:
+                    try:
+                        await ws.send_json({"event": "state", "data": {"running": False, "sessionid": sessionid}})
+                    except (ConnectionResetError, RuntimeError):
+                        break
+                    continue
+                try:
+                    await ws.send_json({"event": "state", "data": live2.state()})
+                except (ConnectionResetError, RuntimeError):
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    async def push_event_loop():
+        """Drain whichever subscription queue is currently active."""
+        try:
+            while not ws.closed:
+                if sub["queue"] is None:
+                    await nonlocal_event.wait()
+                    nonlocal_event.clear()
+                    continue
+                try:
+                    event = await sub["queue"].get()
+                except (asyncio.CancelledError, RuntimeError):
+                    break
+                try:
+                    await ws.send_json(event)
+                except (ConnectionResetError, RuntimeError):
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    async def receive_loop():
+        try:
+            async for msg in ws:
+                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED, WSMsgType.ERROR):
+                    break
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+
+    state_task = asyncio.create_task(push_state_loop())
+    event_task = asyncio.create_task(push_event_loop())
+    try:
+        await receive_loop()
+    finally:
+        state_task.cancel()
+        event_task.cancel()
+        for t in (state_task, event_task):
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        if sub["queue"] is not None and sub["live"] is not None:
+            sub["live"].unsubscribe(sub["queue"])
     return ws
 
 

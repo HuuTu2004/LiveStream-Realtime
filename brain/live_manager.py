@@ -37,6 +37,9 @@ class LiveManager:
         self._live_id: str = ""
         self._running = False
         self._lock = asyncio.Lock()
+        # Realtime pubsub — each subscriber owns an asyncio.Queue. Listener
+        # callback pushes events here; WS handlers fan out to clients.
+        self._subscribers: set[asyncio.Queue] = set()
 
     # ------------------------------------------------------------------
     async def start(self, platform: str, live_id: str) -> dict:
@@ -56,6 +59,9 @@ class LiveManager:
             if platform == "tiktok":
                 from .platforms.tiktok import TikTokListener
                 self._listener = TikTokListener(self._brain, live_id)
+                # Wire realtime push: listener publishes events into our bus,
+                # WS handlers consume from it.
+                self._listener.on_event = self.publish
                 await self._listener.start()
 
             self._platform = platform
@@ -111,7 +117,42 @@ class LiveManager:
     def switch_product(self, product_id: str = "", index: int = -1) -> bool:
         if self._brain is None:
             return False
-        return self._brain.switch_product(product_id=product_id, index=index)
+        ok = self._brain.switch_product(product_id=product_id, index=index)
+        if ok:
+            # Push state immediately so subscribers see the new on-air
+            # without waiting for the 1s snapshot tick.
+            self.publish({"event": "state", "data": self.state()})
+        return ok
+
+    # ─── Pubsub (push to WS subscribers) ───────────────────────────────
+    def subscribe(self) -> asyncio.Queue:
+        """Subscribe to realtime events. Caller owns the queue and must
+        call unsubscribe() (typically in a finally block)."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        self._subscribers.discard(q)
+
+    def publish(self, event: dict) -> None:
+        """Non-blocking fan-out. If a subscriber's queue is full (slow client),
+        drop the oldest event instead of blocking — better to lose one frame
+        than to back-pressure the listener and stall comment ingestion."""
+        if not self._subscribers:
+            return
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                except Exception:
+                    pass
+                try:
+                    q.put_nowait(event)
+                except Exception:
+                    log.debug("[Live] failed to publish into subscriber queue")
 
 
 # ─── Global registry ──────────────────────────────────────────────────

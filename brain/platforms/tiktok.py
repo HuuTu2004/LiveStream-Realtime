@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Optional, TYPE_CHECKING
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,9 @@ class TikTokListener:
         # Buffer comment gần đây cho UI hiển thị
         self._recent_comments: list[dict] = []
         self._max_recent = 100
+        # Realtime hook — set by LiveManager. Signature: (event_dict) -> None
+        # Called synchronously from event handlers, must be non-blocking.
+        self.on_event = None
 
     # ------------------------------------------------------------------
     def stats(self) -> dict:
@@ -141,7 +145,7 @@ class TikTokListener:
                     "type": "comment",
                     "username": user,
                     "text": text,
-                    "ts": asyncio.get_event_loop().time(),
+                    "ts": int(time.time() * 1000),
                 }
                 self._buffer_comment(rec)
                 await self.brain.feed_comment(user, text, platform="tiktok")
@@ -154,6 +158,7 @@ class TikTokListener:
                 user = self._extract_username(event.user)
                 count = int(getattr(event, "count", 1) or 1)
                 self._stats["likes_total"] += count
+                self._emit_stat()
                 await self.brain.on_like(user, count)
             except Exception:
                 log.exception("[TikTok] LikeEvent")
@@ -163,6 +168,7 @@ class TikTokListener:
             try:
                 user = self._extract_username(event.user)
                 self._stats["joins_total"] += 1
+                self._emit_stat()
                 await self.brain.on_join(user)
             except Exception:
                 log.exception("[TikTok] JoinEvent")
@@ -172,6 +178,7 @@ class TikTokListener:
             try:
                 user = self._extract_username(event.user)
                 self._stats["follows_total"] += 1
+                self._emit_stat()
                 await self.brain.on_follow(user)
             except Exception:
                 log.exception("[TikTok] FollowEvent")
@@ -181,6 +188,7 @@ class TikTokListener:
             try:
                 user = self._extract_username(event.user)
                 self._stats["shares_total"] += 1
+                self._emit_stat()
                 await self.brain.on_share(user)
             except Exception:
                 log.exception("[TikTok] ShareEvent")
@@ -195,9 +203,10 @@ class TikTokListener:
                     "type": "gift",
                     "username": user,
                     "text": f"đã tặng {gift_name}",
-                    "ts": asyncio.get_event_loop().time(),
+                    "ts": int(time.time() * 1000),
                 }
-                self._buffer_comment(rec)
+                self._buffer_comment(rec)   # _buffer_comment emits "comments" event
+                self._emit_stat()            # gift counter delta
                 # Treat gift as boosted engagement
                 await self.brain.on_like(user, 10)
             except Exception:
@@ -210,6 +219,7 @@ class TikTokListener:
                 count = int(getattr(event, "total", 0) or 0)
                 if count > 0:
                     self._stats["viewer_count"] = count
+                    self._emit_stat()
                     self.brain.set_viewer_count(count)
             except Exception:
                 log.exception("[TikTok] RoomUserSeqEvent")
@@ -246,6 +256,23 @@ class TikTokListener:
         self._recent_comments.append(rec)
         if len(self._recent_comments) > self._max_recent:
             self._recent_comments = self._recent_comments[-self._max_recent:]
+        # Push to live subscribers — UI sees the comment within ms instead
+        # of waiting for the 1s state snapshot tick.
+        self._emit({"event": "comments", "data": [rec]})
+
+    def _emit(self, event: dict) -> None:
+        cb = self.on_event
+        if cb is None:
+            return
+        try:
+            cb(event)
+        except Exception:
+            log.exception("[TikTok] on_event callback failed")
+
+    def _emit_stat(self) -> None:
+        """Push the lightweight stats delta — used after counter-only events
+        (like/join/follow/share/viewer) so the KPI strip updates instantly."""
+        self._emit({"event": "stat", "data": dict(self._stats)})
 
     @staticmethod
     def _extract_username(user) -> str:
