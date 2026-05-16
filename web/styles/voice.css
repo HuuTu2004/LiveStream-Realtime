@@ -1,0 +1,346 @@
+/* Voice panel — wizard 3 bước, friendly non-tech. */
+
+/* ─── Wizard frame ─────────────────────────────────────────────── */
+.voice-wizard {
+  padding: 0;
+  overflow: hidden;
+}
+.voice-wizard .wiz-step {
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.voice-wizard .wiz-step:last-child {
+  border-bottom: none;
+}
+.step-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.step-num {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  font-weight: 700;
+  font-size: 16px;
+  border: 1px solid var(--accent-ring);
+}
+.step-title h3 {
+  margin: 0 0 var(--space-1) 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.step-title .muted {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.step-body {
+  padding-left: 52px;  /* align with step-title text */
+}
+@media (max-width: 640px) {
+  .step-body { padding-left: 0; }
+}
+
+/* ─── Step 1: Record ────────────────────────────────────────────── */
+.rec-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+.btn-rec-big, .btn-rec-stop, .btn-try-big, .btn-save-big {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 12px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  transition: transform .08s, box-shadow .15s;
+}
+.btn-rec-big {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: white;
+  box-shadow: 0 4px 14px rgba(239, 68, 68, 0.25);
+}
+.btn-rec-big:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(239, 68, 68, 0.35); }
+.btn-rec-stop {
+  background: var(--bg-overlay);
+  color: var(--text-default);
+  border: 1px solid var(--border-default);
+}
+.rec-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: white;
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+.stop-square {
+  display: inline-block;
+  width: 10px; height: 10px;
+  background: var(--text-default);
+}
+.timer-big {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-soft);
+  min-width: 64px;
+}
+.rec-or {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.upload-link {
+  cursor: pointer;
+  color: var(--accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font-size: 14px;
+}
+.upload-link:hover { color: var(--accent); }
+
+/* Audio preview block */
+.audio-preview {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: var(--space-3);
+  margin-top: var(--space-3);
+}
+.preview-label {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+}
+.audio-preview audio {
+  width: 100%;
+  height: 36px;
+}
+.preview-meta {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  font-size: 13px;
+  margin-top: var(--space-2);
+}
+
+/* Inline status colors */
+.ok-green { color: var(--success); font-weight: 500; }
+.warn-red { color: var(--danger); font-weight: 500; }
+.warn-orange { color: var(--warning); font-weight: 500; }
+.info { color: var(--accent-hover); }
+
+/* Hint expandable */
+.hint-row {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-canvas);
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+}
+.hint-row summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-soft);
+  font-weight: 500;
+}
+.hint-row ul {
+  margin: var(--space-2) 0 0 var(--space-4);
+  padding: 0;
+  font-size: 13px;
+  color: var(--text-soft);
+  line-height: 1.6;
+}
+.hint-row li { margin-bottom: var(--space-1); }
+
+/* ─── Step 2: textarea ──────────────────────────────────────────── */
+#ref-text {
+  width: 100%;
+  font-size: 15px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-canvas);
+  color: var(--text-strong);
+  resize: vertical;
+  min-height: 80px;
+}
+#ref-text:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+
+/* ─── Step 3: try + save ────────────────────────────────────────── */
+.try-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.btn-try-big {
+  background: var(--accent-secondary-soft);
+  color: var(--accent-secondary);
+  border: 1px solid rgba(34, 211, 238, 0.35);
+}
+.btn-try-big:hover { background: rgba(34, 211, 238, 0.18); }
+.btn-try-big:disabled { opacity: 0.5; cursor: not-allowed; }
+
+#clone-audio, #tryout-audio {
+  width: 100%;
+  margin-top: var(--space-3);
+  height: 36px;
+}
+
+.divider {
+  margin: var(--space-4) 0;
+  border: none;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.name-label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: var(--space-3);
+}
+.name-label input {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: 12px;
+  font-size: 15px;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-canvas);
+  color: var(--text-strong);
+}
+.name-label input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+
+.save-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.btn-save-big {
+  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+  color: white;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+}
+.btn-save-big:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.4);
+}
+.btn-save-big:disabled {
+  background: var(--bg-overlay);
+  color: var(--text-disabled);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+.btn-link {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  text-decoration: underline;
+}
+.btn-link:hover { color: var(--text-default); }
+.btn-link.btn-danger { color: var(--danger); }
+.btn-link.btn-danger:hover { color: var(--danger-hover); }
+
+/* ─── Library ───────────────────────────────────────────────────── */
+.lib-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.badge.active {
+  background: var(--success-soft);
+  color: var(--success);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--success-ring);
+}
+
+.voice-card {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  padding: var(--space-4);
+  margin-bottom: var(--space-3);
+  transition: border-color .15s;
+}
+.voice-card.is-active {
+  border-color: var(--success);
+  background: linear-gradient(180deg, var(--success-soft), var(--bg-overlay));
+}
+.voice-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+.voice-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.voice-card-meta {
+  display: flex;
+  gap: var(--space-3);
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+.voice-card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.voice-card-actions audio {
+  flex: 1;
+  min-width: 200px;
+  height: 32px;
+}
+.voice-card-actions .small {
+  font-size: 12px;
+}
+
+.empty-icon {
+  display: block;
+  font-size: 32px;
+  margin-bottom: var(--space-2);
+}
+
+/* ─── Tryout ────────────────────────────────────────────────────── */
+.voice-tryout textarea {
+  width: 100%;
+  padding: 12px;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-canvas);
+  color: var(--text-strong);
+  resize: vertical;
+  min-height: 60px;
+}
+.voice-tryout textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
