@@ -82,7 +82,7 @@ async def human(request):
             else:
                 # Có LLM key thật → gọi LLM 1 lần (không persist history)
                 from brain.llm_client import LLMClient
-                from brain.gesture_tagger import GestureTagger
+                from brain.sentence_splitter import SentenceSplitter
                 client = LLMClient(
                     base_url=getattr(opt, 'llm_url', ''),
                     api_key=getattr(opt, 'llm_api_key', ''),
@@ -91,14 +91,11 @@ async def human(request):
 
                 async def _one_shot():
                     try:
-                        tagger = GestureTagger()
-                        async for sent, info in tagger.feed_stream(client.stream(text, product=None)):
+                        splitter = SentenceSplitter()
+                        async for sent in splitter.feed_stream(client.stream(text, product=None)):
                             if not sent:
                                 continue
-                            di = dict(datainfo)
-                            if info.get('gesture'):
-                                di['gesture'] = info['gesture']
-                            avatar_session.put_msg_txt(sent, di)
+                            avatar_session.put_msg_txt(sent, datainfo)
                     except Exception as e:
                         logger.warning(f"[/human] LLM stream failed: {e} — fallback echo")
                         avatar_session.put_msg_txt(text, datainfo)

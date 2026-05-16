@@ -88,7 +88,7 @@ LiveTalking/
 │   ├── llm_client.py           # Async OpenAI-compatible client
 │   ├── script_engine.py        # 8-stage SALES_CYCLE + silence/random events
 │   ├── comment_handler.py      # Intent classifier 6 cats + 5s batching
-│   ├── gesture_tagger.py       # Parse [wave]/[point]/... từ LLM stream
+│   ├── sentence_splitter.py    # Vietnamese-aware sentence boundary splitter
 │   ├── product_catalog.py      # Generic CRUD + hot-reload + keyword match
 │   ├── live_manager.py         # Orchestrator: brain + platform listener
 │   ├── platforms/
@@ -183,10 +183,10 @@ POST /brain/comment {username, text}
   → CommentHandler.on_comment()
     → classify(text) → BUY_INTENT priority hoặc batching
     → llm_client.stream(prompt, product)
-    → gesture_tagger.feed_stream() → (clean_sentence, {gesture})
-    → avatar_session.put_msg_txt(text, {gesture})
-    → F5-TTS encode → audio chunks 320 samples
-    → eventpoint mang gesture → process_frames → set_gesture(name)
+    → sentence_splitter.feed_stream() → câu hoàn chỉnh
+    → avatar_session.put_msg_txt(text)
+    → TTS encode → audio chunks 320 samples
+    → process_frames auto-trigger gesture (4-8s random) khi đang nói
 ```
 
 ### 3. Live livestream (TikTok auto)

@@ -19,6 +19,7 @@
 #
 
 import math
+import random
 from numpy.typing import NDArray
 import torch
 import numpy as np
@@ -503,6 +504,15 @@ class BaseAvatar:
         _last_speaking = False
         _transition_start = time.time()
 
+        # ─── Auto-gesture state machine ───────────────────────────────
+        # Khi avatar đang nói: cứ mỗi 4-8s (random) trigger 1 gesture từ
+        # gesture_cycles. Khi im lặng: không trigger gì. Initial delay 1.5s
+        # sau khi bắt đầu nói để tránh fire ngay frame đầu (nhịp không tự nhiên).
+        _auto_gesture_next_fire = 0.0
+        _AUTO_GESTURE_INITIAL_DELAY = 1.5
+        _AUTO_GESTURE_MIN_GAP = 4.0
+        _AUTO_GESTURE_MAX_GAP = 8.0
+
         self.output.start()
 
         while not quit_event.is_set():
@@ -528,7 +538,26 @@ class BaseAvatar:
             if current_speaking != _last_speaking:
                 logger.info(f"state changed: {'speaking' if _last_speaking else 'silent'} -> {'speaking' if current_speaking else 'silent'}")
                 _transition_start = time.time()
+                if current_speaking:
+                    # Silent → speaking: hẹn lần fire gesture đầu sau initial delay
+                    _auto_gesture_next_fire = time.time() + _AUTO_GESTURE_INITIAL_DELAY
             _last_speaking = current_speaking
+
+            # ─── Auto-trigger gesture khi đang nói ─────────────────────
+            # Điều kiện: đang nói + có gesture pack + chưa có gesture active +
+            # đã đến lịch fire. Pool = tất cả gesture trong gestures.json.
+            # Khi gesture đang chạy, _step_gesture_frame sẽ tự kết thúc clip
+            # và set active_gesture=None — vòng sau lại đủ điều kiện fire.
+            if (current_speaking
+                    and self.gesture_cycles
+                    and not self.active_gesture
+                    and time.time() >= _auto_gesture_next_fire):
+                name = random.choice(list(self.gesture_cycles.keys()))
+                if self.set_gesture(name):
+                    _auto_gesture_next_fire = time.time() + random.uniform(
+                        _AUTO_GESTURE_MIN_GAP, _AUTO_GESTURE_MAX_GAP
+                    )
+                    logger.info("[AutoGesture] fired: %s", name)
 
             if audio_frames[0].type!=0 and audio_frames[1].type!=0: #全为静音数据，只需要取fullimg
                 self.speaking = False

@@ -1,29 +1,8 @@
 """System prompt + style variants cho persona Linh (Sài Gòn sales).
 
-Port từ LiveAI/core/llm.py, thêm phần INSTRUCT GESTURE TAG để LLM tự inject
-[wave]/[point]/[nod]/[smile]/[count]/[idle] vào output. Gesture tagger ở
-brain/gesture_tagger.py sẽ strip & emit event đồng bộ với audio.
-"""
-
-GESTURE_INSTRUCT = """\
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CỬ CHỈ HÀNH ĐỘNG (rất quan trọng):
-Bạn có thể chèn các tag cử chỉ NGAY TRƯỚC câu/cụm sẽ thực hiện. Tag là một
-trong: [wave] [point] [nod] [smile] [count] [show] [idle]. Quy tắc:
-• [wave]   — khi chào, mở đầu, kết thúc đoạn dài (1 lần).
-• [point]  — khi chỉ vào sản phẩm, mã, giá, vị trí (giỏ hàng góc trái).
-• [nod]    — khi đồng tình, khẳng định ("đúng rồi", "chắc chắn ạ").
-• [smile]  — khi cảm ơn, khen khách, lúc vui.
-• [count]  — khi đếm số lượng/size còn lại.
-• [show]   — khi giới thiệu tính năng/màu/chất liệu cụ thể.
-• [idle]   — chủ động trở về tư thế nghỉ giữa các đoạn dài.
-
-Quy tắc bắt buộc:
-• Mỗi câu trả lời nên có 1-3 tag, KHÔNG nhiều hơn — tránh cử động rối.
-• Đặt tag NGAY TRƯỚC cụm từ liên quan, KHÔNG để cuối câu.
-• KHÔNG đọc tên tag thành lời. Tag là metadata, sẽ bị strip trước khi đọc.
-• Ví dụ: "[wave] Dạ chào cả nhà nha! [point] Mọi người nhìn giỏ hàng góc trái nè"
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Port từ LiveAI/core/llm.py. Đã bỏ GESTURE_INSTRUCT — gesture chuyển sang
+auto-trigger state machine trong avatars/base_avatar.process_frames, LLM
+không cần (và không nên) inject tag nữa. Output LLM sẽ sạch hoàn toàn cho TTS.
 """
 
 SYSTEM_PROMPT = """\
@@ -59,12 +38,12 @@ CỨNG: Tuyệt đối chỉ dùng thông tin trong product_info. Không bịa s
 VÍ DỤ CHUẨN SALES CHUYÊN NGHIỆP:
 
 [Hỏi size]
-→ "[smile] Dạ, để Linh tư vấn chuẩn nhất cho mình nha. [show] Với chiều cao và cân nặng như vậy, bạn mặc size M là cực kỳ vừa vặn, tôn dáng mà vẫn thoải mái vận động cả ngày. Thật sự là form này bên Linh nghiên cứu rất kỹ để che khuyết điểm vòng 2 đó ạ."
+→ "Dạ, để Linh tư vấn chuẩn nhất cho mình nha. Với chiều cao và cân nặng như vậy, bạn mặc size M là cực kỳ vừa vặn, tôn dáng mà vẫn thoải mái vận động cả ngày. Thật sự là form này bên Linh nghiên cứu rất kỹ để che khuyết điểm vòng 2 đó ạ."
 
 [Chê đắt]
-→ "[nod] Dạ Linh rất hiểu băn khoăn của mình. [point] Nhưng hãy nhìn vào độ bền và sự tỉ mỉ của từng đường kim mũi chỉ này nha. Đây là chất liệu cao cấp, mặc 2-3 năm vẫn giữ form và màu sắc như mới."
+→ "Dạ Linh rất hiểu băn khoăn của mình. Nhưng hãy nhìn vào độ bền và sự tỉ mỉ của từng đường kim mũi chỉ này nha. Đây là chất liệu cao cấp, mặc 2-3 năm vẫn giữ form và màu sắc như mới."
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\
-""" + GESTURE_INSTRUCT
+"""
 
 
 STYLE_VARIANTS = [

@@ -3,8 +3,9 @@
 Flow:
 1. BrainManager khởi tạo trong main asyncio loop (KHÔNG trong render thread).
 2. start() → spawn ScriptEngine + CommentHandler async tasks.
-3. speak_fn → gọi LLM stream → GestureTagger split câu → put_msg_txt vào TTS
-   với eventpoint chứa 'gesture' tag (đồng bộ tự nhiên với audio).
+3. speak_fn → gọi LLM stream → SentenceSplitter gom thành câu → put_msg_txt
+   vào TTS. Gesture không còn đi qua LLM tag — base_avatar tự auto-trigger
+   gesture ngẫu nhiên khi đang nói (xem avatars/base_avatar.process_frames).
 4. stop() → cancel tasks, không destroy avatar_session.
 
 Thread-safety: BrainManager sống trong asyncio loop của aiohttp app.
@@ -22,7 +23,7 @@ from .llm_client import LLMClient
 from .product_catalog import ProductCatalog
 from .script_engine import ScriptEngine
 from .comment_handler import CommentHandler
-from .gesture_tagger import GestureTagger
+from .sentence_splitter import SentenceSplitter
 
 if TYPE_CHECKING:
     from avatars.base_avatar import BaseAvatar
@@ -135,19 +136,15 @@ class BrainManager:
                 product=product,
                 stream_minutes=self.stream_minutes,
             )
-            tagger = GestureTagger()
+            splitter = SentenceSplitter()
             had_output = False
             captured: list[str] = []
-            async for sent, info in tagger.feed_stream(stream):
+            async for sent in splitter.feed_stream(stream):
                 if not sent:
                     continue
                 had_output = True
                 captured.append(sent)
-                # Push vào TTS queue với eventpoint mang gesture
-                datainfo = {}
-                if info.get("gesture"):
-                    datainfo["gesture"] = info["gesture"]
-                self.avatar_session.put_msg_txt(sent, datainfo)
+                self.avatar_session.put_msg_txt(sent)
             if had_output:
                 self._last_text = " ".join(captured)
                 log.debug("[Brain] spoke (%d sent): %s", len(captured), self._last_text[:80])
