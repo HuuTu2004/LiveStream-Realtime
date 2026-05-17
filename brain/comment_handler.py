@@ -225,6 +225,42 @@ class CommentHandler:
         )
         await self._safe_speak(prompt, priority=False)
 
+    # ─── Commerce events (đẩy mạnh chốt đơn) ──────────────────────────
+    async def on_order(self, username: str, product_name: str = "") -> None:
+        """Đơn vừa chốt — social proof CỰC MẠNH cho khán giả đang lưỡng lự."""
+        if self.script_engine:
+            self.script_engine.reset_silence()
+        prod_part = f" sản phẩm {product_name}" if product_name else ""
+        prompt = (
+            f"Một khách hàng [{username}] vừa chốt đơn{prod_part} ngay trong livestream! "
+            f"Hãy cảm ơn khách bằng tên, khen họ đã nhanh tay săn đúng deal hot, "
+            f"và thúc giục những bạn đang còn lưỡng lự nhanh tay chốt đơn theo trước khi "
+            f"hết hàng. 3 câu đầy năng lượng, tạo hiệu ứng FOMO mạnh."
+        )
+        await self._safe_speak(prompt, priority=True)
+
+    async def on_subscribe(self, username: str, level: int = 1) -> None:
+        """Subscriber trả phí — VIP greeting mạnh hơn on_follow."""
+        if self.script_engine:
+            self.script_engine.reset_silence()
+        prompt = (
+            f"Một khách VIP [{username}] vừa subscribe shop ở level {level}! Đây là khách "
+            f"hàng cực kỳ ủng hộ shop. Hãy cảm ơn họ thật chân thành, nhấn mạnh họ là "
+            f"khách ruột, và hứa hẹn tặng quà/voucher riêng cho subscriber. 3 câu trang trọng."
+        )
+        await self._safe_speak(prompt, priority=True)
+
+    async def on_envelope(self, username: str) -> None:
+        """Lì xì đỏ — thông báo + boost engagement."""
+        if self.script_engine:
+            self.script_engine.reset_silence()
+        prompt = (
+            f"Khách [{username}] vừa gửi lì xì đỏ ngay trong livestream! Cảm ơn họ và "
+            f"khuyến khích những bạn khác tham gia để có cơ hội nhận lì xì may mắn. "
+            f"2 câu vui tươi."
+        )
+        await self._safe_speak(prompt, priority=False)
+
     # ------------------------------------------------------------------
     async def _safe_speak(self, prompt: str, priority: bool = False) -> None:
         if not self._speak_fn:

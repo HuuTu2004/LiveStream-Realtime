@@ -1,15 +1,26 @@
-"""TikTok Live scraper — dùng thư viện `TikTokLive` (như LiveAI).
+"""TikTok Live scraper — wire TikTokLive lib → BrainManager.
 
-Connect tới TikTok live qua @username hoặc room_id, listen các event:
-- Comment → brain.feed_comment
-- Like → brain.on_like
-- Join → brain.on_join
-- Follow → brain.on_follow
-- Share → brain.on_share
-- Gift → brain.on_like (treat as engagement)
-- ViewerUpdate → brain.set_viewer_count
+Event coverage (đầy đủ cho sales):
+  Core engagement:
+    Comment → feed_comment (LLM reply)
+    Like / Digg → on_like (milestone reply)
+    Join → on_join (greeting random 40%)
+    Follow → on_follow (thank)
+    Share → on_share (thank)
+    Gift → on_like ×10 + comment feed entry
+    RoomUserSeq → set_viewer_count (milestones)
+  Commerce (TikTok Shop):
+    VideoLiveGoodsOrder → on_order (REAL social proof — đơn vừa chốt!)
+    Subscribe → on_subscribe (VIP greeting, mạnh hơn follow)
+    Envelope → on_envelope (lì xì — thông báo + boost engagement)
+  Barrage (paid):
+    Barrage → priority feed_comment (cao hơn comment thường)
+  Host control:
+    LivePause / LiveUnpause → brain.pause / brain.resume
+  Connection:
+    Connect, Disconnect, LiveEnd
 
-Reconnect tự động khi disconnect (TikTokLive lib handle phần lớn).
+Reconnect tự động exp-backoff 5→60s.
 """
 
 from __future__ import annotations
@@ -50,6 +61,7 @@ class TikTokListener:
             "platform": "tiktok",
             "live_id": self.live_id,
             "connected": False,
+            "paused": False,             # host bấm pause live
             "viewer_count": 0,
             "comments_total": 0,
             "likes_total": 0,
@@ -57,6 +69,11 @@ class TikTokListener:
             "follows_total": 0,
             "shares_total": 0,
             "gifts_total": 0,
+            "orders_total": 0,           # đơn từ TikTok Shop ngay trong live
+            "subs_total": 0,             # subscriber trả phí
+            "envelopes_total": 0,        # phong bao đỏ
+            "barrages_total": 0,         # comment chữ chạy trả phí
+            "last_order_at": 0,
             "last_error": "",
         }
         # Buffer comment gần đây cho UI hiển thị
@@ -106,6 +123,19 @@ class TikTokListener:
                 JoinEvent, FollowEvent, ShareEvent, GiftEvent,
                 LiveEndEvent, RoomUserSeqEvent,
             )
+            # Optional events — có từ TikTokLive 6.x. Wrap try để lib version
+            # cũ không crash.
+            _opt = {}
+            for name in (
+                "VideoLiveGoodsOrderEvent", "SubscribeEvent", "EnvelopeEvent",
+                "BarrageEvent", "LivePauseEvent", "LiveUnpauseEvent",
+            ):
+                try:
+                    _opt[name] = __import__(
+                        "TikTokLive.events", fromlist=[name]
+                    ).__dict__.get(name)
+                except Exception:
+                    _opt[name] = None
         except ImportError:
             self._stats["last_error"] = "TikTokLive chưa được cài. pip install TikTokLive"
             log.error("[TikTok] %s", self._stats["last_error"])
@@ -223,6 +253,123 @@ class TikTokListener:
                     self.brain.set_viewer_count(count)
             except Exception:
                 log.exception("[TikTok] RoomUserSeqEvent")
+
+        # ─── COMMERCE: đơn hàng phát sinh trong live (TikTok Shop) ────
+        if _opt.get("VideoLiveGoodsOrderEvent"):
+            @self._client.on(_opt["VideoLiveGoodsOrderEvent"])
+            async def on_order(event):
+                try:
+                    user = self._extract_username(getattr(event, "user", None))
+                    product_name = (
+                        getattr(event, "product_name", "")
+                        or getattr(event, "title", "")
+                        or "sản phẩm"
+                    )
+                    self._stats["orders_total"] += 1
+                    self._stats["last_order_at"] = int(time.time() * 1000)
+                    rec = {
+                        "type": "order",
+                        "username": user,
+                        "text": f"vừa chốt đơn: {product_name}",
+                        "ts": int(time.time() * 1000),
+                    }
+                    self._buffer_comment(rec)
+                    self._emit_stat()
+                    if hasattr(self.brain, "on_order"):
+                        await self.brain.on_order(user, product_name)
+                except Exception:
+                    log.exception("[TikTok] VideoLiveGoodsOrderEvent")
+
+        # ─── SUBSCRIBE: subscriber trả phí (VIP) ──────────────────────
+        if _opt.get("SubscribeEvent"):
+            @self._client.on(_opt["SubscribeEvent"])
+            async def on_subscribe(event):
+                try:
+                    user = self._extract_username(getattr(event, "user", None))
+                    level = int(getattr(event, "sub_level", 1) or 1)
+                    self._stats["subs_total"] += 1
+                    rec = {
+                        "type": "subscribe",
+                        "username": user,
+                        "text": f"vừa subscribe (level {level})",
+                        "ts": int(time.time() * 1000),
+                    }
+                    self._buffer_comment(rec)
+                    self._emit_stat()
+                    if hasattr(self.brain, "on_subscribe"):
+                        await self.brain.on_subscribe(user, level)
+                except Exception:
+                    log.exception("[TikTok] SubscribeEvent")
+
+        # ─── ENVELOPE: lì xì đỏ (engagement booster) ──────────────────
+        if _opt.get("EnvelopeEvent"):
+            @self._client.on(_opt["EnvelopeEvent"])
+            async def on_envelope(event):
+                try:
+                    user = self._extract_username(getattr(event, "user", None))
+                    self._stats["envelopes_total"] += 1
+                    rec = {
+                        "type": "envelope",
+                        "username": user,
+                        "text": "vừa gửi lì xì đỏ",
+                        "ts": int(time.time() * 1000),
+                    }
+                    self._buffer_comment(rec)
+                    self._emit_stat()
+                    if hasattr(self.brain, "on_envelope"):
+                        await self.brain.on_envelope(user)
+                except Exception:
+                    log.exception("[TikTok] EnvelopeEvent")
+
+        # ─── BARRAGE: comment chạy chữ trả phí (priority) ─────────────
+        if _opt.get("BarrageEvent"):
+            @self._client.on(_opt["BarrageEvent"])
+            async def on_barrage(event):
+                try:
+                    user = self._extract_username(getattr(event, "user", None))
+                    text = (getattr(event, "comment", "") or
+                            getattr(event, "content", "") or "").strip()
+                    if not text:
+                        return
+                    self._stats["barrages_total"] += 1
+                    rec = {
+                        "type": "barrage",
+                        "username": user,
+                        "text": f"⚡ {text}",
+                        "ts": int(time.time() * 1000),
+                    }
+                    self._buffer_comment(rec)
+                    self._emit_stat()
+                    # Barrage là comment trả phí → đẩy thẳng vào brain.
+                    # Brain CommentHandler tự xử intent (rất khả năng BUY).
+                    await self.brain.feed_comment(user, text, platform="tiktok", has_icon=True)
+                except Exception:
+                    log.exception("[TikTok] BarrageEvent")
+
+        # ─── HOST CONTROL: pause / resume ─────────────────────────────
+        if _opt.get("LivePauseEvent"):
+            @self._client.on(_opt["LivePauseEvent"])
+            async def on_pause(event):
+                try:
+                    self._stats["paused"] = True
+                    self._emit_stat()
+                    log.info("[TikTok] Host paused live @%s", self.live_id)
+                    if hasattr(self.brain, "pause"):
+                        await self.brain.pause()
+                except Exception:
+                    log.exception("[TikTok] LivePauseEvent")
+
+        if _opt.get("LiveUnpauseEvent"):
+            @self._client.on(_opt["LiveUnpauseEvent"])
+            async def on_unpause(event):
+                try:
+                    self._stats["paused"] = False
+                    self._emit_stat()
+                    log.info("[TikTok] Host resumed live @%s", self.live_id)
+                    if hasattr(self.brain, "resume"):
+                        await self.brain.resume()
+                except Exception:
+                    log.exception("[TikTok] LiveUnpauseEvent")
 
         # ─── Connect loop with retry ──────────────────────────────────
         backoff = 5

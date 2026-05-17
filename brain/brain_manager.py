@@ -296,6 +296,39 @@ class BrainManager:
         if self._running:
             await self.comments.on_share(username)
 
+    async def on_order(self, username: str, product_name: str = "") -> None:
+        """Đơn hàng vừa chốt từ TikTok Shop — social proof realtime mạnh nhất."""
+        if self._running and hasattr(self.comments, "on_order"):
+            await self.comments.on_order(username, product_name)
+
+    async def on_subscribe(self, username: str, level: int = 1) -> None:
+        """Subscriber trả phí — VIP greeting (cao hơn follow)."""
+        if self._running and hasattr(self.comments, "on_subscribe"):
+            await self.comments.on_subscribe(username, level)
+
+    async def on_envelope(self, username: str) -> None:
+        """Lì xì đỏ — thông báo nhanh để boost engagement."""
+        if self._running and hasattr(self.comments, "on_envelope"):
+            await self.comments.on_envelope(username)
+
+    async def pause(self) -> None:
+        """Host pause live → brain im lặng tới khi resume.
+
+        Không stop hoàn toàn (giữ state, comment vẫn được nhận). Chỉ ngăn
+        ScriptEngine fire stage prompts để tránh nói khi host đi ra ngoài.
+        """
+        async with self._lock:
+            if hasattr(self.script_engine, "pause"):
+                self.script_engine.pause()
+                log.info("[Brain] Paused (host paused live)")
+
+    async def resume(self) -> None:
+        """Host resume live → brain nói tiếp."""
+        async with self._lock:
+            if hasattr(self.script_engine, "resume"):
+                self.script_engine.resume()
+                log.info("[Brain] Resumed (host resumed live)")
+
     def set_viewer_count(self, count: int) -> None:
         self.script_engine.update_viewer_count(int(count))
 

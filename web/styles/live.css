@@ -3,9 +3,15 @@
 /* ─── Stat strip (top, full-width KPI bar) ─────────────────── */
 .kpi-strip {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(8, 1fr);
   gap: var(--space-3);
   margin-bottom: var(--space-5);
+}
+@media (max-width: 1100px) {
+  .kpi-strip { grid-template-columns: repeat(4, 1fr); }
+}
+@media (max-width: 640px) {
+  .kpi-strip { grid-template-columns: repeat(2, 1fr); }
 }
 .kpi {
   background: var(--bg-canvas);
@@ -529,3 +535,105 @@
 @media (max-width: 500px) {
   .control-card .form-row { grid-template-columns: 1fr; }
 }
+
+/* ─── KPI highlight (orders/subs - revenue signals) ─────────── */
+.kpi.kpi-highlight {
+  background: linear-gradient(135deg, var(--success-soft), transparent);
+  border-color: var(--success-ring);
+}
+.kpi.kpi-highlight .kpi-value {
+  color: var(--success);
+  font-weight: 700;
+}
+
+/* ─── Pause pill (visible khi host pause live) ──────────────── */
+#pause-pill {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ─── Comment type badges ───────────────────────────────────── */
+.comment-row.order {
+  background: linear-gradient(90deg, var(--success-soft), transparent);
+  border-left: 3px solid var(--success);
+  padding-left: 8px;
+}
+.comment-row.subscribe {
+  background: linear-gradient(90deg, var(--accent-soft), transparent);
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+}
+.comment-row.envelope {
+  background: linear-gradient(90deg, var(--danger-soft, rgba(239,68,68,0.12)), transparent);
+  border-left: 3px solid var(--danger);
+  padding-left: 8px;
+}
+.comment-row.barrage {
+  background: linear-gradient(90deg, var(--accent-secondary-soft), transparent);
+  border-left: 3px solid var(--accent-secondary);
+  padding-left: 8px;
+}
+.comment-row .type-icon {
+  display: inline-block;
+  margin-right: 4px;
+}
+
+/* ─── Debug card (collapsed by default) ─────────────────────── */
+.debug-card {
+  margin-top: var(--space-5);
+}
+.debug-card summary {
+  cursor: pointer;
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  list-style: none;
+  font-weight: 500;
+  color: var(--text-soft);
+}
+.debug-card summary::-webkit-details-marker { display: none; }
+.debug-card summary::before {
+  content: "▸";
+  display: inline-block;
+  transition: transform .15s;
+  color: var(--text-muted);
+}
+.debug-card[open] summary::before { transform: rotate(90deg); }
+.debug-card[open] summary {
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-4);
+}
+.debug-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  padding: 0 var(--space-4) var(--space-4);
+}
+@media (max-width: 768px) {
+  .debug-grid { grid-template-columns: 1fr; }
+}
+.debug-grid h4 {
+  margin: 0 0 var(--space-2);
+  font-size: 14px;
+  font-weight: 600;
+}
+.debug-grid textarea,
+.debug-grid input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-canvas);
+  color: var(--text-default);
+  margin-bottom: var(--space-2);
+}
+.debug-grid .btn-row { margin-top: var(--space-2); gap: var(--space-2); }
+.btn-block { width: 100%; }
+.small { font-size: 12px; }
+.muted { color: var(--text-muted); }

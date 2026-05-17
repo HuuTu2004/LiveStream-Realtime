@@ -176,6 +176,9 @@ class ScriptEngine:
         self._next_silence_threshold = self._new_silence_threshold()
         self._task: Optional[asyncio.Task] = None
         self._stopped = False
+        # Paused = host pause live (TikTok LivePauseEvent). Engine vẫn chạy
+        # loop nhưng SKIP fire prompts để tránh nói khi host đi ra ngoài.
+        self._paused = False
 
     def _new_silence_threshold(self) -> float:
         return self._silence_timeout * random.uniform(0.65, 1.35)
@@ -306,6 +309,24 @@ class ScriptEngine:
             except (asyncio.CancelledError, Exception):
                 pass
 
+    def pause(self) -> None:
+        """Tạm dừng fire prompts (loop vẫn chạy, comment vẫn được xử lý qua
+        speak_fn priority). Dùng khi host pause TikTok live."""
+        self._paused = True
+
+    def resume(self) -> None:
+        """Bật lại — fire prompts như bình thường."""
+        self._paused = False
+        # Reset timer để khi resume engine không fire dồn dập do silence quá dài
+        try:
+            loop = asyncio.get_running_loop()
+            self._last_interaction = loop.time()
+        except RuntimeError:
+            pass
+
+    def is_paused(self) -> bool:
+        return self._paused
+
     async def run(self) -> None:
         assert self._speak_fn, "Phải gọi set_speaker() trước"
         loop = asyncio.get_running_loop()
@@ -354,6 +375,11 @@ class ScriptEngine:
             except asyncio.CancelledError:
                 break
 
+            # Host pause → skip fire prompts. Comment vẫn được handle qua
+            # speak_fn priority do CommentHandler quản lý độc lập.
+            if self._paused:
+                continue
+
             try:
                 if self._idle_fn is None or not self._idle_fn():
                     continue
@@ -385,6 +411,8 @@ class ScriptEngine:
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
                 break
+            if self._paused:
+                continue
             now = loop.time()
             elapsed = now - self._start_time
             silence = now - self._last_interaction

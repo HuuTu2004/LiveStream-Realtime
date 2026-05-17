@@ -33,9 +33,12 @@ models/*
 data/avatars/*
 !data/avatars/.gitkeep
 data/uploads/
+data/voices/*
+!data/voices/.gitkeep
 data/products.json
 data/products.json.bak
 data/settings.json
+data/settings.local.json
 data/record.mp4
 
 # Job artifacts
