@@ -1,0 +1,24 @@
+[Unit]
+Description=LiveTalking production stack (lmdeploy + vieneu + app.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/workspace/LiveTalking
+EnvironmentFile=/root/.livetalking_env
+ExecStart=/bin/bash /tmp/start_prod.sh
+ExecStopPost=/bin/bash -c 'pkill -9 -f "lmdeploy serve|vieneu_server|python.*app.py" || true'
+Restart=always
+RestartSec=10
+TimeoutStartSec=300
+StandardOutput=append:/workspace/LiveTalking/logs/start.log
+StandardError=append:/workspace/LiveTalking/logs/start.log
+
+# Resource limits
+LimitNOFILE=65536
+MemoryHigh=23G
+MemoryMax=24G
+
+[Install]
+WantedBy=multi-user.target

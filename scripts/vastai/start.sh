@@ -203,11 +203,14 @@ ARGS=(
   --persona "${PERSONA}"
   --llm_url "${LLM_URL}"
   --llm_model "${LLM_MODEL}"
-  --llm_api_key "${LLM_API_KEY}"
   --studio_enabled "${STUDIO_ENABLED}"
   --vieneu_http_host 127.0.0.1
   --vieneu_http_port "${VIENEU_HTTP_PORT}"
 )
+# Security: KHÔNG đưa LLM_API_KEY vào ARGS (visible qua `ps aux`).
+# Export sang env để app.py đọc qua os.environ — config.py có fallback.
+export OPENAI_API_KEY="${LLM_API_KEY}"
+export LLM_API_KEY="${LLM_API_KEY}"
 [[ -n "${VIENEU_VOICE_ID}" ]] && ARGS+=(--vieneu_voice_id "${VIENEU_VOICE_ID}")
 [[ -f "${VIENEU_REF_AUDIO}" ]] && ARGS+=(--vieneu_ref_audio "${VIENEU_REF_AUDIO}")
 [[ -n "${VIENEU_REF_TEXT}" ]] && ARGS+=(--vieneu_ref_text "${VIENEU_REF_TEXT}")

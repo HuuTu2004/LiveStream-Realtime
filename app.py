@@ -172,6 +172,15 @@ def main():
                 logger.exception('auto-start brain failed')
         appasync.on_startup.append(lambda app: _autostart_brain())
 
+    # ─── Auto-resume live scrape from disk (survive app restart) ─────
+    async def _autoresume_live():
+        try:
+            from brain.live_manager import auto_resume
+            await auto_resume(opt, session_manager.get_session)
+        except Exception:
+            logger.exception('auto_resume live failed')
+    appasync.on_startup.append(lambda app: _autoresume_live())
+
     # ─── Static frontend (CUỐI cùng — sau khi tất cả route động đã register) ─
     async def _serve_index(_request):
         return web.FileResponse('web/index.html')

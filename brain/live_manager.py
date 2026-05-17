@@ -12,7 +12,10 @@ Trách nhiệm:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,6 +25,31 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 SUPPORTED_PLATFORMS = ("tiktok",)
+
+# Persistent live state — survives app.py restart.
+_STATE_DIR = Path("data/uploads")
+_STATE_FILE = _STATE_DIR / "live_state.json"
+
+
+def _save_state_disk(state: dict) -> None:
+    """Atomic write live state (running session map) to disk."""
+    try:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(_STATE_FILE)
+    except Exception:
+        log.exception("[Live] save state disk")
+
+
+def _load_state_disk() -> dict:
+    if not _STATE_FILE.exists():
+        return {}
+    try:
+        return json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        log.exception("[Live] load state disk")
+        return {}
 
 
 class LiveManager:
@@ -69,6 +97,8 @@ class LiveManager:
             self._running = True
             log.info("[Live] started session=%s platform=%s live_id=%s",
                      self.sessionid, platform, live_id)
+            # Persist session map to disk so app restart can auto-resume.
+            self._persist()
             return {"ok": True, "state": self.state()}
 
     async def stop(self) -> dict:
@@ -88,6 +118,7 @@ class LiveManager:
                     log.exception("[Live] brain stop")
             self._running = False
             log.info("[Live] stopped session=%s", self.sessionid)
+            self._persist()
             return {"ok": True, "state": self.state()}
 
     # ------------------------------------------------------------------
@@ -135,6 +166,18 @@ class LiveManager:
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self._subscribers.discard(q)
 
+    def _persist(self) -> None:
+        """Save running session map (sessionid → platform + live_id) to disk."""
+        state = _load_state_disk()
+        if self._running:
+            state[self.sessionid] = {
+                "platform": self._platform,
+                "live_id": self._live_id,
+            }
+        else:
+            state.pop(self.sessionid, None)
+        _save_state_disk(state)
+
     def publish(self, event: dict) -> None:
         """Non-blocking fan-out. If a subscriber's queue is full (slow client),
         drop the oldest event instead of blocking — better to lose one frame
@@ -177,3 +220,32 @@ async def remove_live(sessionid: str) -> None:
         live = _lives.pop(sessionid, None)
     if live is not None:
         await live.stop()
+
+
+async def auto_resume(opt, session_lookup) -> None:
+    """Restore running sessions from disk after app restart.
+    Call once at app boot. `session_lookup(sid)` should return a BaseAvatar
+    (the active session for that sessionid) — typically session_manager.get_session.
+    """
+    state = _load_state_disk()
+    if not state:
+        return
+    log.info("[Live] auto_resume: %d session(s) on disk", len(state))
+    for sid, info in state.items():
+        platform = info.get("platform") or "tiktok"
+        live_id = (info.get("live_id") or "").strip()
+        if not live_id:
+            continue
+        avatar = session_lookup(sid) if session_lookup else None
+        if avatar is None:
+            log.warning("[Live] auto_resume: sessionid=%s không có avatar — bỏ qua", sid)
+            continue
+        try:
+            live = await get_or_create_live(opt, avatar)
+            result = await live.start(platform, live_id)
+            if "error" in result:
+                log.warning("[Live] auto_resume %s failed: %s", sid, result["error"])
+            else:
+                log.info("[Live] auto_resume OK: sid=%s @%s", sid, live_id)
+        except Exception:
+            log.exception("[Live] auto_resume sid=%s", sid)

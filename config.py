@@ -115,8 +115,13 @@ def parse_args():
                         help="LLM API server URL (Ollama/vLLM/Vast.ai)")
     parser.add_argument('--llm_model', type=str, default='qwen2.5:7b',
                         help="LLM model name")
-    parser.add_argument('--llm_api_key', type=str, default='none',
-                        help="LLM API key (cho OpenAI/Anthropic; để 'none' cho local)")
+    # Default đọc từ env OPENAI_API_KEY / LLM_API_KEY — tránh để key trong
+    # `ps aux` (security). CLI arg vẫn override env nếu được pass.
+    import os as _os
+    _default_key = _os.environ.get('OPENAI_API_KEY') or _os.environ.get('LLM_API_KEY') or 'none'
+    parser.add_argument('--llm_api_key', type=str, default=_default_key,
+                        help="LLM API key (cho OpenAI/Anthropic; để 'none' cho local). "
+                             "Default: lấy từ env OPENAI_API_KEY / LLM_API_KEY.")
 
     # ─── Sales Brain ───────────────────────────────────────────────────
     parser.add_argument('--brain_enabled', type=_str2bool, default=False,
