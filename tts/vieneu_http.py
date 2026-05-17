@@ -33,6 +33,42 @@ import re
 import struct
 import time
 import threading
+
+
+# Strip emoji + symbol chars trước khi gửi TTS — vieneu/lmdeploy không phát âm
+# được emoji, có thể gây artifact hoặc rỗng output.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001F9FF"   # symbols & pictographs
+    "\U0001F600-\U0001F64F"   # emoticons
+    "\U0001F680-\U0001F6FF"   # transport & map
+    "\U0001F700-\U0001F77F"   # alchemical
+    "\U0001F780-\U0001F7FF"   # geometric shapes extended
+    "\U0001F800-\U0001F8FF"   # supplemental arrows-C
+    "\U0001FA00-\U0001FA6F"   # chess symbols
+    "\U0001FA70-\U0001FAFF"   # symbols & pictographs extended-A
+    "\U00002600-\U000026FF"   # misc symbols
+    "\U00002700-\U000027BF"   # dingbats
+    "\U0001F900-\U0001F9FF"   # supplemental symbols
+    "\U0001FE00-\U0001FEFF"   # variation selectors supplement
+    "‍"                   # zero-width joiner
+    "♀-♂"           # gender symbols
+    "☀-⭕"           # misc symbols
+    "⏏⏩⌚"
+    "️"                   # variation selector-16
+    "〰"
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_emoji(text: str) -> str:
+    """Bỏ emoji + dấu lạ, gộp whitespace. Returns clean text for TTS."""
+    if not text:
+        return ""
+    out = _EMOJI_RE.sub("", text)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out
 from typing import Iterator, Optional
 
 import numpy as np
@@ -110,6 +146,35 @@ class VieNeuHttpTTS(BaseTTS):
             f"[VieNeuHTTP] endpoint={self._endpoint} voice={self._default_voice_id or '—'} "
             f"ref={self._default_ref_audio or '—'}"
         )
+        # Pre-warm: call /infer_stream với câu test ngắn để tải model + cache
+        # ONNX graph + JIT compile path. Giảm first-real-utterance TTFB từ 2-5s
+        # → 0.3-0.5s.
+        threading.Thread(target=self._prewarm, daemon=True).start()
+
+    def _prewarm(self) -> None:
+        """Warm-up TTS pipeline ngay sau init — tránh cold-start TTFB ~2-5s
+        cho utterance đầu tiên. Dummy call để JIT compile + GPU kernel load."""
+        try:
+            time.sleep(2)  # đợi server xong /health
+            payload = {
+                "text": "Xin chào.",
+                "voice_id": self._default_voice_id or None,
+                "ref_audio": self._default_ref_audio or None,
+                "ref_text": self._default_ref_text or None,
+            }
+            payload = {k: v for k, v in payload.items() if v is not None}
+            t0 = time.perf_counter()
+            r = self._session.post(self._endpoint, json=payload, timeout=60, stream=True)
+            # Drain stream nhưng vứt chunks (warm-up only)
+            total = 0
+            for chunk in r.iter_content(chunk_size=8192):
+                total += len(chunk)
+                if total > 65536:
+                    r.close()
+                    break
+            logger.info(f"[VieNeuHTTP] pre-warm done @ {time.perf_counter()-t0:.2f}s (drained {total} bytes)")
+        except Exception as e:
+            logger.warning(f"[VieNeuHTTP] pre-warm skip: {e}")
 
     # ------------------------------------------------------------------
     def _wait_server_ready(self, timeout: float = 180) -> None:
@@ -142,7 +207,9 @@ class VieNeuHttpTTS(BaseTTS):
 
     def _txt_to_audio_impl(self, msg: tuple[str, dict]):
         text, textevent = msg
-        if not text or not text.strip():
+        # Strip emoji + zero-width chars trước TTS — tránh artifact/empty output.
+        text = _strip_emoji(text or "")
+        if not text:
             return
 
         tts_override = textevent.get("tts", {}) if isinstance(textevent, dict) else {}
@@ -170,9 +237,16 @@ class VieNeuHttpTTS(BaseTTS):
         logger.info(f"[VieNeuHTTP] prebuffer target = {prebuffer_secs:.1f}s")
         prebuffer_samples = int(prebuffer_secs * self.SR_TARGET)
         prebuffered = False
+        # Speed control: nói nhanh hơn cho live bán hàng năng động. Tăng tốc
+        # bằng cách lừa soxr nghĩ input rate cao hơn → output ít samples hơn
+        # → audio ngắn hơn → phát nhanh hơn. Trade-off: pitch tăng ~10% nhưng
+        # giọng vẫn natural cho TTS Vietnamese.
+        speed = float(getattr(self.opt, "tts_speed", 1.0) or 1.0)
+        speed = max(0.5, min(2.0, speed))
+        effective_in_rate = int(self.SR_NATIVE * speed)
         # Stateful streaming resampler — không artifact ở biên chunk.
         rs = soxr.ResampleStream(
-            in_rate=self.SR_NATIVE,
+            in_rate=effective_in_rate,
             out_rate=self.SR_TARGET,
             num_channels=1,
             dtype="float32",

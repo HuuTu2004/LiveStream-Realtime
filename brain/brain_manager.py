@@ -75,6 +75,9 @@ class BrainManager:
         self._stream_start = time.monotonic()
         self._priority_count = 0  # đếm các speak priority đang chạy
         self._lock = asyncio.Lock()
+        # Interrupt support: track current running speak để priority có thể cancel
+        self._current_speak_task = None
+        self._current_is_priority = False
         # Serialize tất cả speak() — comment priority và stage prompt cùng dùng
         # 1 lock → FIFO, không bao giờ overlap LLM stream / TTS push.
         self._speak_lock = asyncio.Lock()
@@ -195,10 +198,12 @@ class BrainManager:
     async def speak(self, prompt: str, priority: bool = False) -> None:
         """Đẩy 1 prompt qua LLM → SentenceSplitter → TTS → avatar.
 
-        Mọi speak() đều serialize qua self._speak_lock → comment priority và
-        stage prompt FIFO, không bao giờ chen ngang giữa câu (TTS queue chỉ
-        thấy nguyên 1 đoạn rồi mới đến đoạn kế). Khi priority=True chỉ tăng
-        counter để telemetry/UI biết, không thay đổi luồng.
+        priority=True (comment/order/subscribe): INTERRUPT auto-pitch hiện
+        tại → cancel running speak + flush TTS queue + take over ngay. Đây
+        là yếu tố then chốt cho UX bán hàng live — khách comment phải reply
+        trong giây chứ không xếp hàng 1-4 phút sau auto-pitch.
+
+        priority=False (stage prompt): chờ lock FIFO bình thường.
         """
         if not self._running:
             log.warning("[Brain] speak() called while not running")
@@ -206,6 +211,18 @@ class BrainManager:
 
         if priority:
             self._priority_count += 1
+            # Interrupt path: nếu đang speak non-priority → cancel + flush audio queue
+            cur = getattr(self, "_current_speak_task", None)
+            cur_is_priority = getattr(self, "_current_is_priority", False)
+            if cur is not None and not cur.done() and not cur_is_priority:
+                log.info("[Brain] priority interrupting non-priority speak")
+                cur.cancel()
+                try:
+                    self.avatar_session.flush_talk()
+                except Exception:
+                    log.exception("[Brain] flush_talk on interrupt")
+                # Reset buffer accounting — TTS queue đã drop, đừng giữ ước tính cũ
+                self._buffer_drain_at = time.monotonic()
         try:
             async with self._speak_lock:
                 # Re-check sau khi acquire lock — có thể stop() đã gọi trong
@@ -232,12 +249,18 @@ class BrainManager:
                         captured.append(sent)
                         self.avatar_session.put_msg_txt(sent)
 
+                # Track current task để priority có thể cancel
+                self._current_speak_task = asyncio.current_task()
+                self._current_is_priority = priority
                 try:
                     await asyncio.wait_for(_drain_stream(), timeout=self._speak_timeout)
                 except asyncio.TimeoutError:
                     log.warning("[Brain] speak() timeout %.1fs — LLM treo, "
                                 "release lock và bỏ qua. Stage kế sẽ fire.",
                                 self._speak_timeout)
+                except asyncio.CancelledError:
+                    log.info("[Brain] speak() cancelled by priority interrupt")
+                    raise
                     # captured/had_output có thể đã partial — vẫn account vào
                     # buffer nếu có để tránh fire chồng ngay sau timeout.
                 if had_output:
@@ -265,9 +288,13 @@ class BrainManager:
                               self._llm_duration_ema, priority, self._last_text[:80])
                 else:
                     log.warning("[Brain] empty LLM output for prompt: %s", prompt[:60])
+        except asyncio.CancelledError:
+            pass  # bị priority cancel — normal flow
         except Exception:
             log.exception("[Brain] speak error")
         finally:
+            self._current_speak_task = None
+            self._current_is_priority = False
             if priority:
                 self._priority_count = max(0, self._priority_count - 1)
 

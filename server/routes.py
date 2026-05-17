@@ -268,6 +268,30 @@ async def wsstream(request):
 
 # ─── 路由注册 ──────────────────────────────────────────────────────────────
 
+async def avatar_swap(request):
+    """Hot-swap avatar of running session without restart.
+    POST {sessionid: "0", avatar_id: "..."}.
+    """
+    try:
+        params = await request.json()
+        sid = str(params.get("sessionid", "0"))
+        avatar_id = (params.get("avatar_id") or "").strip()
+        if not avatar_id:
+            return json_error("Thiếu avatar_id")
+        avatar = get_session(request, sid)
+        if avatar is None:
+            return json_error(f"Session '{sid}' không tồn tại")
+        if not hasattr(avatar, "hot_swap_avatar"):
+            return json_error("Avatar model hiện không hỗ trợ hot-swap (chỉ musetalk)")
+        ok = avatar.hot_swap_avatar(avatar_id)
+        if not ok:
+            return json_error(f"Hot-swap fail — kiểm tra data/avatars/{avatar_id}/ có đủ file")
+        return json_ok({"avatar_id": avatar_id, "sessionid": sid})
+    except Exception as e:
+        logger.exception("avatar_swap")
+        return json_error(str(e))
+
+
 def setup_routes(app):
     """注册所有路由到 aiohttp app"""
     app.router.add_post("/human", human)
@@ -279,5 +303,6 @@ def setup_routes(app):
     app.router.add_post("/interrupt_talk", interrupt_talk)
     app.router.add_post("/is_speaking", is_speaking)
     app.router.add_get("/wsstream/{sessionid}", wsstream)
+    app.router.add_post("/avatar/swap", avatar_swap)
     # NOTE: static '/' route phải đặt CUỐI cùng — không thì sẽ swallow các path khác
     # đăng ký sau (vd /studio/* ở studio.routes). Để studio_routes tự add prefix riêng.

@@ -79,6 +79,9 @@ class TikTokListener:
         # Buffer comment gần đây cho UI hiển thị
         self._recent_comments: list[dict] = []
         self._max_recent = 100
+        # Order log (persist to disk for crash recovery + reporting)
+        self._orders: list[dict] = []
+        self._orders_path = f"data/uploads/orders_{self.live_id}.jsonl"
         # Realtime hook — set by LiveManager. Signature: (event_dict) -> None
         # Called synchronously from event handlers, must be non-blocking.
         self.on_event = None
@@ -89,6 +92,20 @@ class TikTokListener:
 
     def recent_comments(self, limit: int = 50) -> list[dict]:
         return self._recent_comments[-limit:][::-1]  # newest first
+
+    def recent_orders(self, limit: int = 100) -> list[dict]:
+        """Return last N orders (newest first)."""
+        return self._orders[-limit:][::-1]
+
+    def _persist_order(self, order: dict) -> None:
+        """Append order line to JSONL file — survives crash."""
+        try:
+            import json, os
+            os.makedirs("data/uploads", exist_ok=True)
+            with open(self._orders_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(order, ensure_ascii=False) + "\n")
+        except Exception:
+            log.exception("[TikTok] persist_order")
 
     # ------------------------------------------------------------------
     async def start(self) -> None:
@@ -266,14 +283,21 @@ class TikTokListener:
                         or "sản phẩm"
                     )
                     self._stats["orders_total"] += 1
-                    self._stats["last_order_at"] = int(time.time() * 1000)
+                    ts = int(time.time() * 1000)
+                    self._stats["last_order_at"] = ts
                     rec = {
                         "type": "order",
                         "username": user,
                         "text": f"vừa chốt đơn: {product_name}",
-                        "ts": int(time.time() * 1000),
+                        "product": product_name,
+                        "ts": ts,
                     }
                     self._buffer_comment(rec)
+                    # Persistent order log (JSONL)
+                    self._orders.append(rec)
+                    if len(self._orders) > 5000:
+                        self._orders = self._orders[-5000:]
+                    self._persist_order(rec)
                     self._emit_stat()
                     if hasattr(self.brain, "on_order"):
                         await self.brain.on_order(user, product_name)

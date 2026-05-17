@@ -217,6 +217,7 @@ export LLM_API_KEY="${LLM_API_KEY}"
 # Production perf knobs (env-overridable)
 [[ -n "${BATCH_SIZE:-}" ]]              && ARGS+=(--batch_size "${BATCH_SIZE}")
 [[ -n "${VIENEU_HTTP_PREBUFFER:-}" ]]   && ARGS+=(--vieneu_http_prebuffer "${VIENEU_HTTP_PREBUFFER}")
+[[ -n "${TTS_SPEED:-}" ]]               && ARGS+=(--tts_speed "${TTS_SPEED}")
 
 echo "[start] === Step 3/3: app.py (venv_talking) ==="
 echo "[start] open: http://\$PUBLIC_IPADDR:${LISTEN_PORT}/"

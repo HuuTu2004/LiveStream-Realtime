@@ -45,6 +45,20 @@ def clean_username(username: str, fallback: str = "bạn") -> str:
 
 _SPAM_PATTERNS = ("http", "t.me", "zalo.me", "follow mình", "sub kênh", "xem tại")
 _BUY_WORDS = ("chốt", "mua", "đặt", "lấy", "order", "ship cho", "lấy 1 cái", "mã")
+
+# Variety pool — randomize vibe + opening style mỗi prompt để tránh AI lặp.
+_VIBES = (
+    "năng động vui vẻ, dùng emoji nhẹ trong văn nói",
+    "thân thiện gần gũi, kiểu chị em tâm tình",
+    "tự tin chuyên gia, nhấn vào lợi ích cụ thể",
+    "hài hước nhẹ duyên dáng",
+    "nhiệt huyết bán hàng, đẩy mạnh CTA chốt đơn",
+    "trầm ấm điềm đạm, thuyết phục bằng số liệu thực tế",
+)
+_OPENERS_AVOID = (
+    "Chào bạn", "Chào cả nhà", "Xin chào", "Hello", "Hi các bạn",
+    "Linh chào", "Mọi người ơi",
+)
 _PRICE_WORDS = ("giá", "bao nhiêu", "nhiêu tiền", "nhiêu ạ", "rẻ không", "đắt không")
 _SIZE_WORDS = ("size", "kg", "cao", "nặng", "mặc được không", "vừa không", "số mấy")
 _ASK_WORDS = (
@@ -187,12 +201,17 @@ class CommentHandler:
                 if switched is not None and self._switch_product_cb:
                     self._switch_product_cb(switched)
                     self.catalog.set_current_by_index(switched)
+            vibe = random.choice(_VIBES)
+            avoid_str = ", ".join(f'"{x}"' for x in _OPENERS_AVOID)
             prompt = (
-                f"=== SẢN PHẨM ĐANG BÁN ===\n{prod_ctx}\n"
-                f"=== TÌNH HUỐNG ===\nKhách tên [{clean_name}] vừa muốn mua: \"{text}\"\n"
+                f"=== SẢN PHẨM ===\n{prod_ctx}\n"
+                f"=== TÌNH HUỐNG ===\nKhách [{clean_name}] muốn mua: \"{text}\"\n"
+                f"=== VIBE ===\n{vibe}\n"
                 f"=== YÊU CẦU ===\n"
-                f"Cảm ơn bằng tên, khen đã chọn đúng sản phẩm hot, hướng dẫn bấm giỏ "
-                f"hàng góc trái màn hình để chốt đơn. 4-5 câu năng lượng, KHÔNG liệt kê."
+                f"Cảm ơn khách bằng tên, khen họ chọn đúng, hướng dẫn bấm giỏ hàng góc "
+                f"trái để chốt đơn. 3-5 câu năng lượng.\n"
+                f"TRÁNH mở đầu bằng: {avoid_str}. Vào thẳng nội dung kiểu 'Tuyệt vời "
+                f"[tên]', 'Hay quá [tên]', 'OK [tên]', 'Linh chốt cho bạn liền nha'..."
             )
             asyncio.create_task(self._safe_speak(prompt, priority=True))
             return
@@ -222,10 +241,15 @@ class CommentHandler:
         if random.random() > rate:
             return
         name = clean_username(username)
+        vibe = random.choice(_VIBES)
         prompt = (
-            f"Live đang vắng. Khách tên [{name}] vừa vào live. Chào riêng bạn ấy "
-            f"bằng tên, MỜI xem sản phẩm shop đang giới thiệu (nhắc tên + 1 USP "
-            f"từ context sản phẩm). 2-3 câu thân thiện, hướng đến CTA xem hàng."
+            f"Live đang vắng. Khách [{name}] vừa vào.\n"
+            f"VIBE: {vibe}\n"
+            f"Nhắc tên khách 1 lần, MỜI xem sản phẩm shop đang giới thiệu (nhắc "
+            f"tên + 1 USP). 2 câu thân thiện hướng CTA.\n"
+            f"TRÁNH 'Chào bạn', 'Xin chào', 'Hello' — vào thẳng nội dung kiểu "
+            f"'À [tên] tới rồi', '[tên] ơi đang giới thiệu...', 'Hay quá có [tên] "
+            f"vào', 'Welcome [tên]'."
         )
         self._last_greet_at = time.time()
         await self._safe_speak(prompt, priority=False)
@@ -243,9 +267,14 @@ class CommentHandler:
         if random.random() > rate:
             return
         name = clean_username(username)
+        vibe = random.choice(_VIBES)
         prompt = (
-            f"Khách tên [{name}] vừa follow shop. Cảm ơn bằng tên, nhấn shop có "
-            f"ưu đãi riêng cho follower, mời ở lại xem live. 2 câu nồng nhiệt."
+            f"Khách [{name}] vừa FOLLOW shop.\n"
+            f"VIBE: {vibe}\n"
+            f"Cảm ơn bằng tên, nhấn shop có ưu đãi riêng cho follower, mời ở lại. "
+            f"2 câu nồng nhiệt.\n"
+            f"TRÁNH 'Chào bạn', 'Cảm ơn bạn' generic — mở đầu kiểu 'Thank [tên]', "
+            f"'[tên] tâm lý ghê', 'Ố [tên] follow rồi nha', 'Chuẩn [tên] luôn'."
         )
         self._last_greet_at = time.time()
         await self._safe_speak(prompt, priority=False)
@@ -264,11 +293,15 @@ class CommentHandler:
             self.script_engine.reset_silence()
         name = clean_username(username)
         prod_part = f" sản phẩm {product_name}" if product_name else ""
+        vibe = random.choice(_VIBES)
         prompt = (
-            f"Khách hàng tên [{name}] vừa chốt đơn{prod_part} ngay trong livestream! "
-            f"Cảm ơn bằng tên, khen họ đã nhanh tay săn đúng deal hot, thúc giục những "
-            f"bạn đang lưỡng lự nhanh tay chốt theo trước khi hết hàng. 3 câu đầy năng "
-            f"lượng, tạo FOMO mạnh."
+            f"🎉 KHÁCH [{name}] VỪA CHỐT ĐƠN{prod_part}!\n"
+            f"VIBE: {vibe}\n"
+            f"Cảm ơn bằng tên, khen họ nhanh tay săn đúng deal hot, thúc các bạn "
+            f"khác lưỡng lự nhanh tay chốt theo trước khi hết hàng. 3 câu năng "
+            f"lượng tạo FOMO mạnh.\n"
+            f"TRÁNH 'Cảm ơn bạn' generic — mở đầu kiểu 'Wow [tên] nhanh tay quá', "
+            f"'Chốt rồi nha [tên]', 'Tuyệt vời [tên]', 'Xuất sắc [tên]'."
         )
         await self._safe_speak(prompt, priority=True)
 
@@ -277,10 +310,14 @@ class CommentHandler:
         if self.script_engine:
             self.script_engine.reset_silence()
         name = clean_username(username)
+        vibe = random.choice(_VIBES)
         prompt = (
-            f"Khách VIP tên [{name}] vừa subscribe shop ở level {level}! Đây là khách "
-            f"hàng cực kỳ ủng hộ. Cảm ơn chân thành, nhấn họ là khách ruột, hứa hẹn "
-            f"tặng quà/voucher riêng cho subscriber. 3 câu trang trọng."
+            f"🌟 KHÁCH VIP [{name}] subscribe shop level {level}!\n"
+            f"VIBE: {vibe}\n"
+            f"Cảm ơn chân thành, nhấn họ là khách ruột, hứa hẹn quà/voucher riêng "
+            f"cho subscriber. 3 câu trang trọng nhưng không cứng.\n"
+            f"TRÁNH 'Cảm ơn bạn' generic — kiểu 'Hú hồn [tên] sub luôn', "
+            f"'Trời ơi [tên] VIP rồi', 'Khách ruột của Linh đây rồi'."
         )
         await self._safe_speak(prompt, priority=True)
 
@@ -332,29 +369,36 @@ class CommentHandler:
                     log.exception("[Comment] catalog match error")
 
             batch_str = "\n".join(f"  - {c}" for c in batch)
+            vibe = random.choice(_VIBES)
+            avoid_str = ", ".join(f'"{x}"' for x in _OPENERS_AVOID)
             prompt = (
                 f"=== SẢN PHẨM ĐANG BÁN ===\n{prod_ctx}\n"
                 f"=== BATCH BÌNH LUẬN ({len(batch)} dòng) ===\n{batch_str}\n"
+                f"=== VIBE PHIÊN NÀY ===\n{vibe}\n"
                 f"=== HƯỚNG DẪN ===\n"
-                f"Bạn là Linh - chuyên gia bán hàng. Phân tích batch trên:\n\n"
-                f"1. **LọC RÁC** (bỏ qua, KHÔNG nhắc):\n"
-                f"   - Spam / troll / ký tự vô nghĩa / quảng cáo / spam emoji\n"
-                f"   - Comment tục tĩu / khiêu khích / chính trị\n"
-                f"   - Chào nhau riêng giữa khách (vd 'anh có ở đó không')\n"
-                f"   - Comment thống trị trước đó (nếu cả batch toàn rác → trả về chuỗi trống)\n\n"
-                f"2. **GỘP TRÙNG**: nhiều bạn hỏi cùng 1 thứ (giá/size/màu/ship) → trả lời CHUNG 1 lần, "
-                f"có thể dạng 'Mấy bạn hỏi về size...'.\n\n"
+                f"Bạn là Linh — chuyên gia bán hàng. Phản hồi batch trên với VIBE đã chọn.\n\n"
+                f"1. **LọC RÁC** (bỏ qua, KHÔNG nhắc): spam / troll / ký tự vô nghĩa / quảng cáo / "
+                f"comment tục tĩu / chính trị / chào nhau riêng giữa khách.\n"
+                f"   → Nếu cả batch toàn rác → trả về '' (empty).\n\n"
+                f"2. **GỘP TRÙNG**: nhiều bạn hỏi 1 thứ (size/giá/màu/ship/mã) → trả lời CHUNG 1 lần.\n\n"
                 f"3. **ƯU TIÊN** (giảm dần):\n"
-                f"   a. Hỏi giá/size/màu/ship cụ thể → tư vấn chi tiết với info sản phẩm trên\n"
-                f"   b. So sánh, băn khoăn, cần tư vấn → giải đáp + push CTA\n"
-                f"   c. Khen shop/sản phẩm → cảm ơn nhẹ (1 câu) + chuyển sang giới thiệu mới\n"
-                f"   d. Comment vu vơ (xinh, hay, đẹp) → bỏ qua nếu batch đã đủ nội dung\n\n"
-                f"4. **CHUẨN TRẢ LỜI**:\n"
-                f"   - Gọi tên khách (đoán tên Việt từ username, bỏ số/ký tự lạ)\n"
-                f"   - 3-6 câu, gộp thành 1 đoạn nói trôi chảy\n"
+                f"   a. Khách hỏi mã/code cụ thể → confirm + tư vấn sản phẩm đó\n"
+                f"   b. Hỏi giá/size/màu/ship → trả lời từ info sản phẩm trên\n"
+                f"   c. So sánh / băn khoăn → giải đáp + push CTA\n"
+                f"   d. Khen shop → cảm ơn nhẹ 1 câu, không spam cảm ơn\n"
+                f"   e. Comment vu vơ → bỏ qua nếu batch đã đủ nội dung\n\n"
+                f"4. **TRÁNH LẶP — đa dạng cách mở đầu**:\n"
+                f"   - KHÔNG bắt đầu bằng: {avoid_str}\n"
+                f"   - Vào thẳng nội dung. Ví dụ: 'Bạn [tên] hỏi về...', 'Mã 18 đúng rồi nha', "
+                f"'Size M phù hợp 50-55kg đó', 'Quần này lưng cao tôn dáng cực kỳ...', "
+                f"'À đúng rồi, mặc combo còn được giảm thêm...', 'Bạn ơi để Linh nói cho nghe...'\n"
+                f"   - Mỗi lần mở đầu phải KHÁC nhau, không lặp pattern.\n\n"
+                f"5. **FORMAT**:\n"
+                f"   - 2-5 câu nói trôi chảy, gọi tên khách 1-2 lần\n"
                 f"   - KHÔNG liệt kê 'Bình luận 1:', 'Trả lời 2:'\n"
-                f"   - Kết bằng CTA hướng đến chốt đơn\n"
-                f"   - Nếu batch toàn rác/không đáng trả lời → trả về '' (empty)"
+                f"   - Kết tự nhiên bằng CTA hoặc nhấn thêm USP (đa dạng kiểu)\n"
+                f"   - Văn nói tự nhiên kiểu chị bán hàng livestream, KHÔNG cứng nhắc\n"
+                f"   - Áp dụng VIBE đã chọn ở trên"
             )
             await self._safe_speak(prompt, priority=True)
 

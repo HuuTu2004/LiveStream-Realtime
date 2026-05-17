@@ -299,7 +299,10 @@ class VideoPanel extends LiveElement {
           ${this._capCell(a.has_face_imgs)}
           ${this._capCell(a.has_voice)}
           ${this._capCell(a.has_gestures)}
-          <td class="actions"><button class="btn-small btn-danger" data-del="${escapeAttr(a.id)}">Xóa</button></td>`;
+          <td class="actions">
+            <button class="btn-small btn-primary" data-swap="${escapeAttr(a.id)}" title="Đổi sang avatar này LIVE — không restart">⇆ Dùng</button>
+            <button class="btn-small btn-danger" data-del="${escapeAttr(a.id)}">Xóa</button>
+          </td>`;
         tb.appendChild(tr);
       }
     }
@@ -317,6 +320,14 @@ class VideoPanel extends LiveElement {
   }
 
   async _tableClick(e) {
+    if (e.target.dataset.swap !== undefined) {
+      const id = e.target.dataset.swap;
+      if (!confirm(`Đổi sang avatar "${id}" ngay LIVE (không restart)?`)) return;
+      const r = await api("/avatar/swap", { method: "POST", body: { sessionid: getSessionId(), avatar_id: id } });
+      if (r.code === 0) toast(`Đã đổi avatar → ${id}`, "ok");
+      else toast(r.msg, "error");
+      return;
+    }
     if (e.target.dataset.del !== undefined) {
       if (!confirm(`Xóa avatar "${e.target.dataset.del}"?`)) return;
       const r = await api("/studio/avatar/delete", { method: "POST", body: { avatar_id: e.target.dataset.del } });

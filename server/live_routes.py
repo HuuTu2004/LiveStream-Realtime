@@ -101,6 +101,32 @@ async def live_comments(request):
         return _err(str(e))
 
 
+async def live_orders(request):
+    """Return order log (newest first) + summary stats cho dashboard."""
+    try:
+        sessionid = str(request.query.get("sessionid", "0"))
+        limit = int(request.query.get("limit", "100"))
+        from brain.live_manager import get_live
+        live = get_live(sessionid)
+        if live is None or live._listener is None:
+            return _ok({"orders": [], "total": 0, "by_product": {}})
+        listener = live._listener
+        orders = getattr(listener, "recent_orders", lambda *_: [])(limit)
+        # Aggregate per product
+        by_product: dict = {}
+        for o in getattr(listener, "_orders", []):
+            p = o.get("product") or "?"
+            by_product[p] = by_product.get(p, 0) + 1
+        return _ok({
+            "orders": orders,
+            "total": listener._stats.get("orders_total", 0),
+            "by_product": by_product,
+        })
+    except Exception as e:
+        log.exception("live_orders")
+        return _err(str(e))
+
+
 async def live_manual_comment(request):
     """Gửi comment thủ công vào brain (test, hoặc khi không kết nối được platform)."""
     try:
@@ -266,6 +292,7 @@ def setup_live_routes(app):
     app.router.add_post("/live/stop", live_stop)
     app.router.add_get("/live/state", live_state)
     app.router.add_get("/live/comments", live_comments)
+    app.router.add_get("/live/orders", live_orders)
     app.router.add_post("/live/comment", live_manual_comment)
     app.router.add_post("/live/product/switch", live_product_switch)
     app.router.add_get("/live/feed", live_feed_ws)

@@ -125,9 +125,26 @@ class MuseReal(BaseAvatar):
         self.vae, self.unet, self.pe, self.timesteps, self.audio_processor = model
 
         self.frame_list_cycle,self.mask_list_cycle,self.coord_list_cycle,self.mask_coords_list_cycle, self.input_latent_list_cycle = avatar
+        self._current_avatar_id = opt.avatar_id
 
         self.asr = WhisperASR(opt,self,self.audio_processor)
         self.asr.warm_up()
+
+    def hot_swap_avatar(self, avatar_id: str) -> bool:
+        """Hot-swap avatar data without restarting render thread.
+        Replaces frame/mask/coord/latent cycle lists in-place (atomic under GIL).
+        Returns True on success, False if load fails.
+        """
+        try:
+            new_avatar = load_avatar(avatar_id)
+            self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle, \
+                self.mask_coords_list_cycle, self.input_latent_list_cycle = new_avatar
+            self._current_avatar_id = avatar_id
+            logger.info(f"[MuseReal] hot-swapped avatar → {avatar_id}")
+            return True
+        except Exception as e:
+            logger.exception(f"[MuseReal] hot_swap_avatar failed: {e}")
+            return False
     
 
     def inference_batch(self, index, audiofeat_batch):

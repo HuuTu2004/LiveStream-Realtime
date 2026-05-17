@@ -98,6 +98,9 @@ def parse_args():
                         help="(vieneu_http) read timeout (s) cho mỗi sentence stream")
     parser.add_argument('--vieneu_http_prebuffer', type=float, default=0.5,
                         help="(vieneu_http) prebuffer client (s) — tăng để smoother khi jitter")
+    parser.add_argument('--tts_speed', type=float, default=1.0,
+                        help="TTS speed multiplier. 1.0 = normal, 1.1 = nhanh hơn 10%% "
+                             "(pitch tăng nhẹ, phù hợp live bán hàng năng động).")
 
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='wsstream',

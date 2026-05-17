@@ -28,9 +28,11 @@ _STOPWORDS = {
 }
 
 _CODE_RE = re.compile(
-    r'\bmã\s*(\d+)'
-    r'|\bsp\s*(\d+)'
-    r'|^(\d{1,2})$',
+    r'\bmã\s*(\d+)'             # "mã 18"
+    r'|\bsp\s*(\d+)'             # "sp 18"
+    r'|\bma\s*(\d+)'             # "ma 18" (no diacritic)
+    r'|\bm[-_]?(\d{1,3})\b'      # "M50", "M-50", "M_50" (mã viết tắt)
+    r'|^(\d{1,2})$',             # comment chỉ có số nguyên ngắn
     re.IGNORECASE,
 )
 
@@ -60,9 +62,18 @@ def _extract_code_number(comments: List[str]) -> Optional[int]:
         if ": " in text:
             text = text.split(": ", 1)[1]
         for m in _CODE_RE.finditer(text):
-            num_str = m.group(1) or m.group(2) or m.group(3)
+            # 5 groups: mã / sp / ma / m\d / standalone
+            num_str = m.group(1) or m.group(2) or m.group(3) or m.group(4) or m.group(5)
+            if not num_str:
+                continue
             num = int(num_str)
-            priority = 2 if (m.group(1) or m.group(2)) else 1
+            # Priority: explicit "mã"/"sp"/"ma" > "M50" abbrev > standalone digit
+            if m.group(1) or m.group(2) or m.group(3):
+                priority = 3
+            elif m.group(4):
+                priority = 2
+            else:
+                priority = 1
             if priority > best_priority:
                 best_priority = priority
                 best = num
