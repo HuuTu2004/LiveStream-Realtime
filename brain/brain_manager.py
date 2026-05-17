@@ -49,6 +49,8 @@ class BrainManager:
             api_key=getattr(opt, "llm_api_key", ""),
             model=getattr(opt, "llm_model", "gpt-4o-mini"),
         )
+        # Optional shop guarantee custom text (override default trust hooks)
+        self.llm.shop_guarantee = getattr(opt, "shop_guarantee", "") or ""
 
         # Script engine (8-stage + silence + random events)
         self.script_engine = ScriptEngine(

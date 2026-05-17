@@ -82,8 +82,17 @@ class LLMClient:
                 break
 
         style_hint = "\n\n[BIẾN THỂ PHONG CÁCH NGẪU NHIÊN: " + random.choice(STYLE_VARIANTS) + "]"
+        # Custom shop guarantee override (nếu user set --shop_guarantee)
+        custom_guarantee = getattr(self, "shop_guarantee", "") or ""
+        guarantee_block = ""
+        if custom_guarantee.strip():
+            guarantee_block = (
+                f"\n\n━━━ CHÍNH SÁCH SHOP RIÊNG (ưu tiên cao hơn default) ━━━\n"
+                f"{custom_guarantee}\n"
+                f"Lồng ghép TỰ NHIÊN vào câu nói khi khách lưỡng lự / hỏi giá / so sánh.\n"
+            )
         system = (
-            SYSTEM_PROMPT + drift_hint + style_hint +
+            SYSTEM_PROMPT + drift_hint + style_hint + guarantee_block +
             "\n\nproduct_info:\n" + _build_product_context(product)
         )
 

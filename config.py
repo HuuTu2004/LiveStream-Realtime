@@ -101,6 +101,10 @@ def parse_args():
     parser.add_argument('--tts_speed', type=float, default=1.0,
                         help="TTS speed multiplier. 1.0 = normal, 1.1 = nhanh hơn 10%% "
                              "(pitch tăng nhẹ, phù hợp live bán hàng năng động).")
+    parser.add_argument('--shop_guarantee', type=str, default='',
+                        help="Custom shop guarantee/return policy — override default trust "
+                             "hooks. Để trống = dùng default (hoàn hàng 100%%, kiểm hàng "
+                             "trước thanh toán, 7-ngày đổi trả).")
 
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='wsstream',
