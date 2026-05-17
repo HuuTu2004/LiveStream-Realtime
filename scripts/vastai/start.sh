@@ -211,6 +211,9 @@ ARGS=(
 [[ -n "${VIENEU_VOICE_ID}" ]] && ARGS+=(--vieneu_voice_id "${VIENEU_VOICE_ID}")
 [[ -f "${VIENEU_REF_AUDIO}" ]] && ARGS+=(--vieneu_ref_audio "${VIENEU_REF_AUDIO}")
 [[ -n "${VIENEU_REF_TEXT}" ]] && ARGS+=(--vieneu_ref_text "${VIENEU_REF_TEXT}")
+# Production perf knobs (env-overridable)
+[[ -n "${BATCH_SIZE:-}" ]]              && ARGS+=(--batch_size "${BATCH_SIZE}")
+[[ -n "${VIENEU_HTTP_PREBUFFER:-}" ]]   && ARGS+=(--vieneu_http_prebuffer "${VIENEU_HTTP_PREBUFFER}")
 
 echo "[start] === Step 3/3: app.py (venv_talking) ==="
 echo "[start] open: http://\$PUBLIC_IPADDR:${LISTEN_PORT}/"

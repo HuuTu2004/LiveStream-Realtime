@@ -318,7 +318,13 @@ class LivePanel extends LiveElement {
     const win = window.open(url, `livetalking_obs_${session}`, features);
     if (!win) { toast("Trình duyệt chặn popup — cho phép popup cho domain này.", "error"); return; }
     win.focus();
-    toast("Đã mở cửa sổ preview · Thêm Window Capture trong OBS.", "ok");
+    // Mute main browser audio (popup là source cho OBS) — tránh duplicate âm thanh.
+    const mute = (m) => { try { if (this._jsmpeg?.audioOut) { this._jsmpeg.audioOut.volume = m ? 0 : 1; } } catch {} };
+    mute(true);
+    const watch = setInterval(() => {
+      if (win.closed) { clearInterval(watch); mute(false); toast("Cửa sổ OBS đóng — bật lại audio chính.", "ok"); }
+    }, 1000);
+    toast("Đã mở cửa sổ preview · Audio chính đã mute. Thêm Window Capture trong OBS.", "ok");
   }
 
   _disconnect() {

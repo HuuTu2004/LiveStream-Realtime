@@ -96,6 +96,8 @@ def parse_args():
                         help="(vieneu_http) port của vieneu_server.py")
     parser.add_argument('--vieneu_http_timeout', type=float, default=120.0,
                         help="(vieneu_http) read timeout (s) cho mỗi sentence stream")
+    parser.add_argument('--vieneu_http_prebuffer', type=float, default=0.5,
+                        help="(vieneu_http) prebuffer client (s) — tăng để smoother khi jitter")
 
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='wsstream',
