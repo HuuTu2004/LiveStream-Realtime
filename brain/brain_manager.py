@@ -66,6 +66,9 @@ class BrainManager:
             script_engine=self.script_engine,
             batch_window_secs=getattr(opt, "comment_batch_secs", 3.0),
         )
+        # Adaptive thresholds (overridable via CLI/env)
+        self.comments._active_window_secs = float(getattr(opt, "live_active_window_secs", 30.0))
+        self.comments._greet_cooldown_secs = float(getattr(opt, "greet_cooldown_secs", 15.0))
         self.comments.set_speaker(self.speak)
 
         # State

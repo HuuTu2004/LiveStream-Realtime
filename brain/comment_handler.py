@@ -10,11 +10,38 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
 from collections import deque
 from typing import Awaitable, Callable, Optional
 
 log = logging.getLogger(__name__)
+
+# Vietnamese name extraction: giữ chữ Latin + có dấu, bỏ emoji/digit/special.
+_NAME_KEEP_RE = re.compile(
+    r"[A-Za-zÀ-ỹĐđ\s]+",  # Latin extended + Vietnamese diacritics
+)
+
+
+def clean_username(username: str, fallback: str = "bạn") -> str:
+    """Trích tên Việt từ TikTok display name: bỏ emoji/digit/special, giữ chữ.
+    Examples:
+      'sakura🌸💃' → 'sakura'
+      '_29thg11_💜' → 'thg'  (fallback nếu quá ngắn)
+      'Mẹ Thóc Gạo@@' → 'Mẹ Thóc Gạo'
+      'NCK0911_LV' → 'NCK LV'  → fallback nếu chỉ caps random
+    """
+    if not username:
+        return fallback
+    parts = _NAME_KEEP_RE.findall(username)
+    name = " ".join(p.strip() for p in parts if p.strip())
+    name = re.sub(r"\s+", " ", name).strip()
+    if len(name) < 2:
+        return fallback
+    # Cắt nếu quá dài (> 30 ký tự) — TikTok name có thể chứa quote dài
+    if len(name) > 30:
+        name = name[:30].rsplit(" ", 1)[0] or name[:30]
+    return name
 
 _SPAM_PATTERNS = ("http", "t.me", "zalo.me", "follow mình", "sub kênh", "xem tại")
 _BUY_WORDS = ("chốt", "mua", "đặt", "lấy", "order", "ship cho", "lấy 1 cái", "mã")
@@ -75,7 +102,15 @@ class CommentHandler:
         self._processed: set[tuple[str, str]] = set()
         self._processed_q: deque[tuple[str, str]] = deque(maxlen=seen_history)
 
-        self._general_reply_rate = 0.6
+        self._general_reply_rate = 0.3
+        # Adaptive priority: nếu có comment trong active_window_secs qua → live
+        # đang sôi nổi, giảm tần suất chào random; nếu vắng → tăng tần suất chào
+        # + pitch sản phẩm cho new joiners.
+        self._last_comment_at: float = 0.0
+        self._active_window_secs: float = 30.0
+        # Global greet cooldown — tránh spam khi nhiều người join cùng lúc.
+        self._last_greet_at: float = 0.0
+        self._greet_cooldown_secs: float = 15.0
         self._task: Optional[asyncio.Task] = None
         self._stopped = False
 
@@ -113,25 +148,19 @@ class CommentHandler:
 
         t = text.lower()
 
-        # Lọc spam ngắn / repeated char
-        if len(text) < 3:
-            return
-        if len(set(t)) < 3 and len(text) > 10:
+        # Skip degenerate text only (single char repeat, empty)
+        if len(text) < 2 or len(set(t)) < 2:
             return
 
-        intent = classify(text)
-        if intent == "SPAM":
-            return
-
-        buy_kw = ("giá", "mã", "mua", "xem", "size", "nhiu", "bao tiền", "chốt")
-        if len(text) < 6 and intent != "BUY_INTENT" and not any(k in t for k in buy_kw):
-            return
-
-        log.info("[Comment] %s [%s]: %s → %s", platform or "?", username, text, intent)
+        # Quick BUY_INTENT detection cho urgent priority — vẫn keyword vì khách
+        # đang ready chốt đơn cần reply ngay, không đợi batch.
+        intent_quick = classify(text)
+        log.info("[Comment] %s [%s]: %s → %s", platform or "?", username, text, intent_quick)
+        self._last_comment_at = time.time()
         if self.script_engine:
             self.script_engine.reset_silence()
 
-        # Auto switch product nếu khách nhắc mã/tên
+        # Auto switch product nếu khách nhắc mã/tên (giữ — UX tốt)
         if self._switch_product_cb and self.catalog:
             try:
                 for i, p in enumerate(self.catalog.get_all_products()):
@@ -147,75 +176,78 @@ class CommentHandler:
 
         self._seen_users[username] = time.time()
 
-        # BUY_INTENT → speak ngay, priority
-        if intent == "BUY_INTENT":
+        clean_name = clean_username(username)
+
+        # BUY_INTENT → speak ngay (urgent, không qua batch)
+        if intent_quick == "BUY_INTENT":
             prod_ctx = ""
             if self.catalog:
-                ctx, switched = self.catalog.get_relevant_product([f"{username}: {text}"])
+                ctx, switched = self.catalog.get_relevant_product([f"{clean_name}: {text}"])
                 prod_ctx = ctx
                 if switched is not None and self._switch_product_cb:
                     self._switch_product_cb(switched)
                     self.catalog.set_current_by_index(switched)
-
             prompt = (
                 f"=== SẢN PHẨM ĐANG BÁN ===\n{prod_ctx}\n"
-                f"=== TÌNH HUỐNG ===\n"
-                f"Một bạn vừa comment muốn mua: \"{text}\"\n"
+                f"=== TÌNH HUỐNG ===\nKhách tên [{clean_name}] vừa muốn mua: \"{text}\"\n"
                 f"=== YÊU CẦU ===\n"
-                f"Phản hồi chuyên nghiệp: bắt đầu bằng việc gọi tên khách ([{username}]) "
-                f"nhưng hãy tự động ĐOÁN và trích xuất tên tiếng Việt từ username "
-                f"(bỏ các số và ký tự đặc biệt). Khen họ đã chọn đúng sản phẩm hot. "
-                f"Hướng dẫn chi tiết: bấm vào biểu tượng giỏ hàng ở góc trái màn hình để chốt đơn. "
-                f"4-5 câu đầy năng lượng, trôi chảy, KHÔNG liệt kê!"
+                f"Cảm ơn bằng tên, khen đã chọn đúng sản phẩm hot, hướng dẫn bấm giỏ "
+                f"hàng góc trái màn hình để chốt đơn. 4-5 câu năng lượng, KHÔNG liệt kê."
             )
             asyncio.create_task(self._safe_speak(prompt, priority=True))
             return
 
-        # SIZE_ASK chưa có số đo: 40% xác suất hỏi ngược
-        if intent == "SIZE_ASK":
-            has_measurements = (
-                any(w in t for w in ("kg", "cân", "cao", "nặng", "cm"))
-                or any(str(i) in text for i in range(40, 130))
-            )
-            if not has_measurements and random.random() < 0.4:
-                prompt = (
-                    f"Một bạn đang quan tâm về size nhưng chưa có số đo (comment: \"{text}\"). "
-                    f"Hãy khéo léo mời bạn chia sẻ chiều cao, cân nặng để Linh tư vấn chuẩn. "
-                    f"Dùng xưng hô 'bạn - Linh'. Nói 2 câu thật duyên dáng."
-                )
-                asyncio.create_task(self._safe_speak(prompt, priority=False))
-                return
-
-        # GENERAL: chỉ reply 60%
-        if intent == "GENERAL" and random.random() > self._general_reply_rate:
-            return
-
-        # Còn lại: gom batch
-        entry = f"[{username}] hỏi: {text}"
+        # MỌI COMMENT KHÁC → batch để LLM tự lọc rác + group + decide reply
+        entry = f"[{clean_name}] {text}"
         async with self._lock:
             self._current_batch.append(entry)
 
+    def _live_is_active(self) -> bool:
+        """Live có comment trong active_window_secs gần đây = sôi nổi."""
+        return (time.time() - self._last_comment_at) < self._active_window_secs
+
+    def _can_greet(self) -> bool:
+        """Global cooldown: tránh spam greet khi spike join."""
+        return (time.time() - self._last_greet_at) >= self._greet_cooldown_secs
+
     async def on_join(self, username: str) -> None:
+        # Adaptive: live sôi nổi → bỏ qua chào (không cắt mạch reply comment).
+        # Live vắng → chào + pitch sản phẩm để giữ engagement.
+        # Global cooldown 15s tránh spam khi spike join.
         if username in self._seen_users:
             return
-        if random.random() > 0.4:
+        if not self._can_greet():
             return
-        greeting = random.choice(_JOIN_GREETINGS)
-        await self._safe_speak(greeting, priority=False)
+        rate = 0.03 if self._live_is_active() else 0.35
+        if random.random() > rate:
+            return
+        name = clean_username(username)
+        prompt = (
+            f"Live đang vắng. Khách tên [{name}] vừa vào live. Chào riêng bạn ấy "
+            f"bằng tên, MỜI xem sản phẩm shop đang giới thiệu (nhắc tên + 1 USP "
+            f"từ context sản phẩm). 2-3 câu thân thiện, hướng đến CTA xem hàng."
+        )
+        self._last_greet_at = time.time()
+        await self._safe_speak(prompt, priority=False)
 
     async def on_like(self, username: str, count: int) -> None:
-        if count and count % 10 == 0:
-            prompt = (
-                "Cảm ơn cả nhà thả tim nha! Ai thương Linh thì thả tim thật mạnh để Linh có "
-                "động lực tung thêm deal hot nha. 2 câu năng lượng."
-            )
-            await self._safe_speak(prompt, priority=False)
+        # Sales-focused: bỏ thank-like hoàn toàn — like là passive engagement.
+        return
 
     async def on_follow(self, username: str) -> None:
+        # Adaptive: live sôi nổi → 10%; live vắng → 60%.
+        # Global cooldown 15s tránh spam.
+        if not self._can_greet():
+            return
+        rate = 0.10 if self._live_is_active() else 0.60
+        if random.random() > rate:
+            return
+        name = clean_username(username)
         prompt = (
-            "Chào mừng người bạn mới gia nhập đại gia đình shop! Cảm ơn bạn đã follow, "
-            "ở lại xem live Linh có nhiều ưu đãi dành riêng cho follower đó. 2 câu nồng nhiệt."
+            f"Khách tên [{name}] vừa follow shop. Cảm ơn bằng tên, nhấn shop có "
+            f"ưu đãi riêng cho follower, mời ở lại xem live. 2 câu nồng nhiệt."
         )
+        self._last_greet_at = time.time()
         await self._safe_speak(prompt, priority=False)
 
     async def on_share(self, username: str) -> None:
@@ -230,12 +262,13 @@ class CommentHandler:
         """Đơn vừa chốt — social proof CỰC MẠNH cho khán giả đang lưỡng lự."""
         if self.script_engine:
             self.script_engine.reset_silence()
+        name = clean_username(username)
         prod_part = f" sản phẩm {product_name}" if product_name else ""
         prompt = (
-            f"Một khách hàng [{username}] vừa chốt đơn{prod_part} ngay trong livestream! "
-            f"Hãy cảm ơn khách bằng tên, khen họ đã nhanh tay săn đúng deal hot, "
-            f"và thúc giục những bạn đang còn lưỡng lự nhanh tay chốt đơn theo trước khi "
-            f"hết hàng. 3 câu đầy năng lượng, tạo hiệu ứng FOMO mạnh."
+            f"Khách hàng tên [{name}] vừa chốt đơn{prod_part} ngay trong livestream! "
+            f"Cảm ơn bằng tên, khen họ đã nhanh tay săn đúng deal hot, thúc giục những "
+            f"bạn đang lưỡng lự nhanh tay chốt theo trước khi hết hàng. 3 câu đầy năng "
+            f"lượng, tạo FOMO mạnh."
         )
         await self._safe_speak(prompt, priority=True)
 
@@ -243,10 +276,11 @@ class CommentHandler:
         """Subscriber trả phí — VIP greeting mạnh hơn on_follow."""
         if self.script_engine:
             self.script_engine.reset_silence()
+        name = clean_username(username)
         prompt = (
-            f"Một khách VIP [{username}] vừa subscribe shop ở level {level}! Đây là khách "
-            f"hàng cực kỳ ủng hộ shop. Hãy cảm ơn họ thật chân thành, nhấn mạnh họ là "
-            f"khách ruột, và hứa hẹn tặng quà/voucher riêng cho subscriber. 3 câu trang trọng."
+            f"Khách VIP tên [{name}] vừa subscribe shop ở level {level}! Đây là khách "
+            f"hàng cực kỳ ủng hộ. Cảm ơn chân thành, nhấn họ là khách ruột, hứa hẹn "
+            f"tặng quà/voucher riêng cho subscriber. 3 câu trang trọng."
         )
         await self._safe_speak(prompt, priority=True)
 
@@ -297,25 +331,30 @@ class CommentHandler:
                 except Exception:
                     log.exception("[Comment] catalog match error")
 
-            size_count = sum(1 for c in batch if any(w in c.lower() for w in _SIZE_WORDS))
-            price_count = sum(1 for c in batch if any(w in c.lower() for w in _PRICE_WORDS))
-            note = ""
-            if size_count >= 2:
-                note += f"(Lưu ý: {size_count} bạn hỏi size — trả lời chung 1 lần) "
-            if price_count >= 2:
-                note += f"({price_count} bạn hỏi giá — nhắc rõ giá live) "
-
             batch_str = "\n".join(f"  - {c}" for c in batch)
             prompt = (
                 f"=== SẢN PHẨM ĐANG BÁN ===\n{prod_ctx}\n"
-                f"=== BÌNH LUẬN KHÁCH ({len(batch)} người) ===\n{batch_str}\n"
-                f"=== YÊU CẦU ===\n"
-                f"{note}"
-                f"Trả lời các bình luận với tư cách Linh - Chuyên gia bán hàng. "
-                f"Tự động ĐOÁN tên tiếng Việt từ username để xưng hô (bỏ số/ký tự đặc biệt). "
-                f"Tư vấn sâu vào lợi ích, giải đáp thắc mắc, kết thúc bằng CTA. "
-                f"TUYỆT ĐỐI KHÔNG liệt kê 'Bình luận 1:', 'Bình luận 2:'. Gộp lại thành "
-                f"MỘT đoạn nói chuyện trôi chảy duy nhất. 5-7 câu đủ chiều sâu."
+                f"=== BATCH BÌNH LUẬN ({len(batch)} dòng) ===\n{batch_str}\n"
+                f"=== HƯỚNG DẪN ===\n"
+                f"Bạn là Linh - chuyên gia bán hàng. Phân tích batch trên:\n\n"
+                f"1. **LọC RÁC** (bỏ qua, KHÔNG nhắc):\n"
+                f"   - Spam / troll / ký tự vô nghĩa / quảng cáo / spam emoji\n"
+                f"   - Comment tục tĩu / khiêu khích / chính trị\n"
+                f"   - Chào nhau riêng giữa khách (vd 'anh có ở đó không')\n"
+                f"   - Comment thống trị trước đó (nếu cả batch toàn rác → trả về chuỗi trống)\n\n"
+                f"2. **GỘP TRÙNG**: nhiều bạn hỏi cùng 1 thứ (giá/size/màu/ship) → trả lời CHUNG 1 lần, "
+                f"có thể dạng 'Mấy bạn hỏi về size...'.\n\n"
+                f"3. **ƯU TIÊN** (giảm dần):\n"
+                f"   a. Hỏi giá/size/màu/ship cụ thể → tư vấn chi tiết với info sản phẩm trên\n"
+                f"   b. So sánh, băn khoăn, cần tư vấn → giải đáp + push CTA\n"
+                f"   c. Khen shop/sản phẩm → cảm ơn nhẹ (1 câu) + chuyển sang giới thiệu mới\n"
+                f"   d. Comment vu vơ (xinh, hay, đẹp) → bỏ qua nếu batch đã đủ nội dung\n\n"
+                f"4. **CHUẨN TRẢ LỜI**:\n"
+                f"   - Gọi tên khách (đoán tên Việt từ username, bỏ số/ký tự lạ)\n"
+                f"   - 3-6 câu, gộp thành 1 đoạn nói trôi chảy\n"
+                f"   - KHÔNG liệt kê 'Bình luận 1:', 'Trả lời 2:'\n"
+                f"   - Kết bằng CTA hướng đến chốt đơn\n"
+                f"   - Nếu batch toàn rác/không đáng trả lời → trả về '' (empty)"
             )
             await self._safe_speak(prompt, priority=True)
 

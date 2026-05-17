@@ -372,12 +372,17 @@ class TikTokListener:
                     log.exception("[TikTok] LiveUnpauseEvent")
 
         # ─── Connect loop with retry ──────────────────────────────────
+        # TikTokLive 6.5+: client.start() raises AlreadyConnectedError if called twice.
+        # Always disconnect() first to reset state — safe to call on never-connected client.
         backoff = 5
         while not self._stopped:
             try:
+                try:
+                    await self._client.disconnect()
+                except Exception:
+                    pass
                 log.info("[TikTok] connecting to @%s ...", self.live_id)
                 await self._client.start()
-                # Khi start() return (live end hoặc disconnect), reconnect
                 if self._stopped:
                     break
                 log.info("[TikTok] client.start() returned, retry in %ds", backoff)

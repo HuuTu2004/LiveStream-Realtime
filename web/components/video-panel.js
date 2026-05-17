@@ -18,8 +18,8 @@ class VideoPanel extends LiveElement {
         <div class="card">
           <div class="card-head">
             <div>
-              <h3>1 · Upload avatar video</h3>
-              <span class="subtitle">MP4 10–60s, mặt rõ, đủ ánh sáng.</span>
+              <h3>1 · Upload &amp; train avatar (1-click)</h3>
+              <span class="subtitle">Upload video MP4 (10–60s, mặt rõ, ánh sáng đủ) → tự động preprocess MuseTalk → avatar sẵn sàng.</span>
             </div>
           </div>
           <form id="avatar-upload-form">
@@ -30,9 +30,20 @@ class VideoPanel extends LiveElement {
               <label>Video MP4
                 <input type="file" name="file" accept="video/*" required />
               </label>
+              <label>Model
+                <select name="model">
+                  <option value="musetalk" selected>MuseTalk (chất lượng cao)</option>
+                  <option value="wav2lip">Wav2Lip (nhanh)</option>
+                  <option value="ultralight">Ultralight (mobile)</option>
+                </select>
+              </label>
+              <label class="checkbox-label" style="margin-top:var(--space-3)">
+                <input type="checkbox" name="auto_preprocess" checked />
+                <span>Tự động preprocess sau upload</span>
+              </label>
             </div>
             <div class="btn-row">
-              <button type="submit" class="btn-primary">Upload</button>
+              <button type="submit" class="btn-primary">▶ Upload &amp; Train MuseTalk</button>
             </div>
           </form>
           <div id="avatar-upload-status" class="status"></div>
@@ -197,14 +208,32 @@ class VideoPanel extends LiveElement {
 
   async _upload(e) {
     e.preventDefault();
-    const fd = new FormData(e.target);
-    setStatus(this.$("#avatar-upload-status"), "Đang upload…");
+    const form = e.target;
+    const fd = new FormData(form);
+    const model = (fd.get("model") || "musetalk").toString();
+    const auto = !!fd.get("auto_preprocess");
+    setStatus(this.$("#avatar-upload-status"), "Đang upload video…");
     const r = await fetch("/studio/avatar/upload", { method: "POST", body: fd });
     const j = await r.json();
-    if (j.code === 0) {
-      setStatus(this.$("#avatar-upload-status"), `OK: ${j.data.avatar_id} (${(j.data.size_bytes / 1024 / 1024).toFixed(2)} MB)`, "ok");
-      this.refreshAvatars();
-    } else setStatus(this.$("#avatar-upload-status"), j.msg, "error");
+    if (j.code !== 0) {
+      setStatus(this.$("#avatar-upload-status"), j.msg, "error");
+      return;
+    }
+    const avatarId = j.data.avatar_id;
+    const sizeMb = (j.data.size_bytes / 1024 / 1024).toFixed(2);
+    this.refreshAvatars();
+    if (!auto) {
+      setStatus(this.$("#avatar-upload-status"), `Upload OK: ${avatarId} (${sizeMb} MB)`, "ok");
+      return;
+    }
+    setStatus(this.$("#avatar-upload-status"), `Upload OK (${sizeMb} MB) — bắt đầu preprocess ${model}…`, "ok");
+    const k = await api("/studio/avatar/preprocess", { method: "POST", body: { avatar_id: avatarId, model } });
+    if (!k || k.code !== 0) {
+      setStatus(this.$("#avatar-upload-status"), `Preprocess fail: ${k?.msg || "no response"}`, "error");
+      return;
+    }
+    toast(`Job ${k.data.job_id} đang preprocess ${model}`, "ok");
+    this._trackJob(k.data.job_id, this.$("#avatar-upload-status"));
   }
 
   async _action(e) {

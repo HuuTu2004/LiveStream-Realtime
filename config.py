@@ -136,12 +136,18 @@ def parse_args():
                         help="(continuous_talk) Chu kỳ Brain check is_idle() để fire câu kế. "
                              "0.1s = phản hồi gần như tức thời khi buffer mỏng đi, CPU không "
                              "đáng kể (~10 check/s).")
-    parser.add_argument('--comment_batch_secs', type=float, default=3.0,
+    parser.add_argument('--comment_batch_secs', type=float, default=1.5,
                         help="Cửa sổ gom batch comment trước khi flush LLM. Thấp = reply nhanh "
                              "hơn nhưng nhiều LLM call hơn.")
-    parser.add_argument('--random_event_chance', type=float, default=0.25,
+    parser.add_argument('--random_event_chance', type=float, default=0.10,
                         help="(continuous_talk) Xác suất mỗi lượt idle fire random event "
                              "(flash_sale/stock_warning/...) thay vì stage prompt.")
+    parser.add_argument('--live_active_window_secs', type=float, default=30.0,
+                        help="(comment_handler) Cửa sổ tính live đang active. Có comment "
+                             "trong N giây → giảm tần suất chào (3%); vắng → tăng (35%).")
+    parser.add_argument('--greet_cooldown_secs', type=float, default=15.0,
+                        help="(comment_handler) Cooldown global giữa các lần chào "
+                             "(on_join/on_follow) để tránh spam khi spike join.")
     parser.add_argument('--target_buffer_secs', type=float, default=1.5,
                         help="(continuous_talk) Safety margin (giây audio) cần giữ trong TTS "
                              "queue NGOÀI thời gian LLM dự kiến chạy. Fire khi remaining < "

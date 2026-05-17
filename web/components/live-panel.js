@@ -465,6 +465,18 @@ class LivePanel extends LiveElement {
     this._renderOnAir(p);
     this._setRunning(!!st.running);
     this._setPaused(!!ps.paused);
+
+    // Restore "Đang cào @username" status + form input after F5 / WS reconnect.
+    if (st.running && st.live_id) {
+      this._setStatus("#live-status", `Đang cào @${st.live_id}`, "ok");
+      const idInput = this.querySelector("input[name='live_id']");
+      if (idInput && !idInput.value) idInput.value = st.live_id;
+      const platSel = this.querySelector("select[name='platform']");
+      if (platSel && st.platform) platSel.value = st.platform;
+    } else if (!st.running && !this._userJustStopped) {
+      const sv = this.$("#live-status");
+      if (sv && !sv.textContent) this._setStatus("#live-status", "Chưa cào", "warn");
+    }
   }
 
   _renderStat(stats) {
@@ -533,11 +545,16 @@ class LivePanel extends LiveElement {
     if (!items || !items.length) return;
     const feed = this.$("#comments-feed");
     if (feed.querySelector(".empty-state")) feed.innerHTML = "";
+    // Auto-scroll only if user is near the top (don't yank reading position)
+    const stickTop = feed.scrollTop < 80;
     for (const c of items) {
       const node = this._renderComment(c);
       feed.insertBefore(node, feed.firstChild);
     }
     while (feed.children.length > 200) feed.removeChild(feed.lastChild);
+    if (stickTop) {
+      requestAnimationFrame(() => feed.scrollTo({ top: 0, behavior: "smooth" }));
+    }
   }
 
   _renderComment(c) {
