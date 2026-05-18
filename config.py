@@ -113,9 +113,20 @@ def parse_args():
                              "wsstream = MPEG-TS over WebSocket + JSMpeg (default, "
                              "realtime ~150ms qua TCP, bypass NAT trên Vast.AI); "
                              "virtualcam = OS virtual camera cho OBS local")
-    parser.add_argument('--max_session', type=int, default=1)
+    parser.add_argument('--max_session', type=int, default=1,
+                        help="Hard cap số session đồng thời (tính cả session '0' mặc định). "
+                             "Default 1 = chỉ session '0'. Tăng nếu cần dynamic session qua API.")
     parser.add_argument('--listenport', type=int, default=8010,
                         help="web listen port")
+    parser.add_argument('--data_dir', type=str, default='data',
+                        help="Base data dir cho state, uploads, orders. Cho phép chạy nhiều "
+                             "instance trên cùng host với data_dir khác nhau.")
+    parser.add_argument('--api_key', type=str, default='',
+                        help="Bearer token bảo vệ POST endpoints + WS. Rỗng = no auth (dev). "
+                             "Có thể set qua env LIVETALKING_API_KEY.")
+    parser.add_argument('--tts_noise_floor_db', type=float, default=-55.0,
+                        help="Mức noise floor (dB) trộn vào TTS silence + padding. "
+                             "Default -55 dB ≈ mic noise thật. Set 0 → disable (zero silence).")
 
     # ─── LLM ───────────────────────────────────────────────────────────
     parser.add_argument('--llm_url', type=str, default='http://localhost:11434/v1',
@@ -200,7 +211,10 @@ def parse_args():
     # File này được tạo/sửa qua route POST /config. Ưu tiên thấp hơn CLI
     # explicit nhưng cao hơn default — vì argparse không biết user truyền hay default,
     # ta chỉ apply settings.json cho các key user CHƯA truyền explicit.
-    settings_path = os.environ.get('LIVETALKING_SETTINGS_PATH', 'data/settings.json')
+    settings_path = os.environ.get(
+        'LIVETALKING_SETTINGS_PATH',
+        os.path.join(opt.data_dir, 'settings.json'),
+    )
     if os.path.exists(settings_path):
         try:
             with open(settings_path, 'r', encoding='utf-8') as f:

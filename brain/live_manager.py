@@ -26,9 +26,19 @@ log = logging.getLogger(__name__)
 
 SUPPORTED_PLATFORMS = ("tiktok",)
 
-# Persistent live state — survives app.py restart.
-_STATE_DIR = Path("data/uploads")
+# Persistent live state — survives app.py restart. Configurable via configure()
+# so multiple instances on same host can isolate state (--data_dir).
+_DATA_DIR = "data"
+_STATE_DIR = Path(_DATA_DIR) / "uploads"
 _STATE_FILE = _STATE_DIR / "live_state.json"
+
+
+def configure(data_dir: str) -> None:
+    """Override base data dir. Call once from app.py:main() before any live ops."""
+    global _DATA_DIR, _STATE_DIR, _STATE_FILE
+    _DATA_DIR = data_dir or "data"
+    _STATE_DIR = Path(_DATA_DIR) / "uploads"
+    _STATE_FILE = _STATE_DIR / "live_state.json"
 
 
 def _save_state_disk(state: dict) -> None:
@@ -88,8 +98,10 @@ class LiveManager:
                 from .platforms.tiktok import TikTokListener
                 self._listener = TikTokListener(self._brain, live_id)
                 # Wire realtime push: listener publishes events into our bus,
-                # WS handlers consume from it.
-                self._listener.on_event = self.publish
+                # WS handlers consume from it. Intercept live_expired để
+                # auto-stop — tránh silent failure khi TikTok invalidate
+                # live_id (host end live + restart).
+                self._listener.on_event = self._on_listener_event
                 await self._listener.start()
 
             self._platform = platform
@@ -177,6 +189,33 @@ class LiveManager:
         else:
             state.pop(self.sessionid, None)
         _save_state_disk(state)
+
+    def _on_listener_event(self, event: dict) -> None:
+        """Listener → bus relay. Intercept live_expired để auto-stop.
+
+        Listener gọi sync từ inside event handler / connect loop. Phải
+        non-blocking; live_expired schedule task qua create_task để stop
+        chạy trên event loop chính."""
+        if event.get("event") == "live_expired":
+            data = event.get("data", {}) or {}
+            log.warning(
+                "[Live] live_id=%s expired (%s) — auto-stop scheduled",
+                data.get("live_id", self._live_id), data.get("reason", "?")[:120],
+            )
+            try:
+                # Phải schedule trên loop của LiveManager (loop đang chạy aiohttp).
+                # Listener gọi từ async context của nó nên get_event_loop OK.
+                asyncio.get_event_loop().create_task(self._auto_stop_on_expire())
+            except RuntimeError:
+                log.exception("[Live] auto_stop schedule failed (no loop)")
+        # Fan-out tới WS subscribers regardless (UI thấy event sớm).
+        self.publish(event)
+
+    async def _auto_stop_on_expire(self) -> None:
+        try:
+            await self.stop()
+        except Exception:
+            log.exception("[Live] auto_stop on live_expired")
 
     def publish(self, event: dict) -> None:
         """Non-blocking fan-out. If a subscriber's queue is full (slow client),

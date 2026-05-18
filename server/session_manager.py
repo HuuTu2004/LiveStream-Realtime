@@ -29,11 +29,13 @@ class SessionManager:
         if not hasattr(self, "initialized"):
             self.sessions: Dict[str, BaseAvatar] = {}
             self.build_session_fn = None
+            self.max_session: Optional[int] = None  # None = không giới hạn
             self.initialized = True
 
-    def init_builder(self, build_session_fn):
-        """配置用于构建 avatar_session 的工厂函数"""
+    def init_builder(self, build_session_fn, max_session: Optional[int] = None):
+        """配置用于构建 avatar_session 的工厂函数. max_session=None → unlimited."""
         self.build_session_fn = build_session_fn
+        self.max_session = max_session if (max_session is None or max_session > 0) else None
         
     def get_session(self, sessionid: str) -> Optional[BaseAvatar]:
         """获取已存活的会话"""
@@ -43,6 +45,10 @@ class SessionManager:
         """检查会话是否存在"""
         return sessionid in self.sessions and self.sessions[sessionid] is not None
         
+    def _count_active(self) -> int:
+        """Đếm session đã build xong (loại placeholder None đang loading)."""
+        return sum(1 for s in self.sessions.values() if s is not None)
+
     async def create_session(self, params: dict, sessionid: str = None) -> str:
         """
         在异步环境中创建一个新会话
@@ -50,10 +56,21 @@ class SessionManager:
         """
         if self.build_session_fn is None:
             raise Exception("SessionManager builder not initialized")
-            
+
+        # Enforce hard cap — tránh OOM GPU khi caller spam create_session.
+        # Count cả session '0' (default render) + placeholder đang load.
+        if self.max_session is not None:
+            total = len(self.sessions)
+            # Cho phép update vào sessionid đã tồn tại (re-create cùng id) — không tính.
+            if (sessionid is None or sessionid not in self.sessions) and total >= self.max_session:
+                raise Exception(
+                    f"max_session limit reached ({self.max_session}). "
+                    f"Active: {total}. Gọi /remove_session để giải phóng trước."
+                )
+
         if sessionid is None:
             sessionid = _rand_session_id()
-            
+
         logger.info('Creating sessionid=%s, current session num=%d', sessionid, len(self.sessions))
         # 预先占位防止重复
         self.sessions[sessionid] = None

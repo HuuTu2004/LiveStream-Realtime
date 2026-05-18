@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Optional, TYPE_CHECKING
 
@@ -79,9 +80,13 @@ class TikTokListener:
         # Buffer comment gần đây cho UI hiển thị
         self._recent_comments: list[dict] = []
         self._max_recent = 100
-        # Order log (persist to disk for crash recovery + reporting)
+        # Order log (persist to disk for crash recovery + reporting). Use opt.data_dir
+        # nếu brain có opt (qua brain.opt), không thì default "data".
         self._orders: list[dict] = []
-        self._orders_path = f"data/uploads/orders_{self.live_id}.jsonl"
+        opt = getattr(brain, "opt", None)
+        data_dir = getattr(opt, "data_dir", "data") if opt is not None else "data"
+        self._orders_dir = os.path.join(data_dir, "uploads")
+        self._orders_path = os.path.join(self._orders_dir, f"orders_{self.live_id}.jsonl")
         # Realtime hook — set by LiveManager. Signature: (event_dict) -> None
         # Called synchronously from event handlers, must be non-blocking.
         self.on_event = None
@@ -100,8 +105,8 @@ class TikTokListener:
     def _persist_order(self, order: dict) -> None:
         """Append order line to JSONL file — survives crash."""
         try:
-            import json, os
-            os.makedirs("data/uploads", exist_ok=True)
+            import json
+            os.makedirs(self._orders_dir, exist_ok=True)
             with open(self._orders_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(order, ensure_ascii=False) + "\n")
         except Exception:
@@ -399,6 +404,15 @@ class TikTokListener:
         # TikTokLive 6.5+: client.start() raises AlreadyConnectedError if called twice.
         # Always disconnect() first to reset state — safe to call on never-connected client.
         backoff = 5
+        # Permanent-failure signals: nếu detect được "user offline" / "live not
+        # found" lặp lại ≥3 lần thì coi như live_id chết vĩnh viễn → emit
+        # live_expired event + thoát loop. Không retry mãi (silent failure).
+        permanent_keywords = (
+            "useroffline", "user offline", "user not live", "not currently live",
+            "live not found", "livenotfound", "not exist", "live ended",
+            "liveended", "host has ended", "stream ended",
+        )
+        permanent_streak = 0
         while not self._stopped:
             try:
                 try:
@@ -410,11 +424,35 @@ class TikTokListener:
                 if self._stopped:
                     break
                 log.info("[TikTok] client.start() returned, retry in %ds", backoff)
+                permanent_streak = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                err_str = str(e).lower()
                 self._stats["last_error"] = str(e)
                 log.exception("[TikTok] connect error: %s", e)
+                if any(k in err_str for k in permanent_keywords):
+                    permanent_streak += 1
+                    log.warning(
+                        "[TikTok] permanent-failure signal #%d (%s)",
+                        permanent_streak, err_str[:80],
+                    )
+                else:
+                    permanent_streak = 0
+                if permanent_streak >= 3:
+                    self._stats["last_error"] = (
+                        f"Live @{self.live_id} đã kết thúc hoặc không tồn tại — listener stopped"
+                    )
+                    log.critical(
+                        "[TikTok] live_id @%s permanently failed (%d consecutive). "
+                        "Emit live_expired và dừng listener.",
+                        self.live_id, permanent_streak,
+                    )
+                    self._emit({
+                        "event": "live_expired",
+                        "data": {"live_id": self.live_id, "reason": str(e)[:200]},
+                    })
+                    break
 
             if self._stopped:
                 break

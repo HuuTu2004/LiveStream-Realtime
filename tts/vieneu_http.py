@@ -141,15 +141,82 @@ class VieNeuHttpTTS(BaseTTS):
         self._timeout = float(getattr(opt, "vieneu_http_timeout", 120.0) or 120.0)
         # Realtime pacer state: deadline cho put_audio_frame kế tiếp.
         self._pace_deadline: Optional[float] = None
+
+        # Noise-floor amplitude cho silence chunks. Mic thật luôn có noise nền;
+        # pure zeros là TikTok AI fingerprint. -55 dB ≈ phòng yên tĩnh có mic.
+        # tts_noise_floor_db = 0 → disable (zeros như trước).
+        nf_db = float(getattr(opt, "tts_noise_floor_db", -55.0) or 0.0)
+        self._noise_amp: float = 10 ** (nf_db / 20.0) if nf_db < 0 else 0.0
+
+        # Health-probe state cho /health endpoint + background monitor. Sau 3
+        # fail liên tiếp → mark unhealthy + log CRITICAL. Render thread vẫn
+        # chạy (đẩy idle frames), chỉ TTS request silently fail.
+        self._healthy: bool = True
+        self._health_fails: int = 0
+        self._health_last_check: float = 0.0
+        self._health_quit = threading.Event()
+
         self._wait_server_ready(timeout=180)
         logger.info(
             f"[VieNeuHTTP] endpoint={self._endpoint} voice={self._default_voice_id or '—'} "
-            f"ref={self._default_ref_audio or '—'}"
+            f"ref={self._default_ref_audio or '—'} noise_floor={nf_db:.1f}dB"
         )
         # Pre-warm: call /infer_stream với câu test ngắn để tải model + cache
         # ONNX graph + JIT compile path. Giảm first-real-utterance TTFB từ 2-5s
         # → 0.3-0.5s.
         threading.Thread(target=self._prewarm, daemon=True).start()
+        # Background health monitor — phát hiện TTS server crash giữa stream.
+        # Cold start có thể fail vài lần đầu, đó là OK; chỉ alarm khi đã từng
+        # OK rồi crash sau (chuyển 1→0).
+        threading.Thread(target=self._health_loop, daemon=True, name="vieneu_health").start()
+
+    # ------------------------------------------------------------------
+    def _silence_chunk(self, n: int) -> np.ndarray:
+        """Trả n samples noise-floor thay vì zeros. Real mic luôn có noise nền."""
+        if self._noise_amp > 0:
+            return (np.random.standard_normal(n).astype(np.float32) * self._noise_amp)
+        return np.zeros(n, dtype=np.float32)
+
+    def is_healthy(self) -> bool:
+        """Cho /health endpoint."""
+        return self._healthy
+
+    def _health_loop(self) -> None:
+        """Probe TTS server /health mỗi 30s. 3 fail liên tiếp → log CRITICAL.
+        Tự recover: 1 success sau fail → reset counter và log info."""
+        was_healthy = True
+        while not self._health_quit.is_set():
+            # Đợi 30s nhưng wake sớm nếu quit.
+            if self._health_quit.wait(30):
+                break
+            try:
+                r = self._session.get(self._health, timeout=5)
+                ok = (r.status_code == 200)
+            except Exception as e:
+                ok = False
+                logger.debug(f"[VieNeuHTTP] health probe error: {e}")
+            self._health_last_check = time.time()
+
+            if ok:
+                if self._health_fails > 0:
+                    logger.info(f"[VieNeuHTTP] health recovered after {self._health_fails} fail(s)")
+                self._health_fails = 0
+                if not self._healthy:
+                    self._healthy = True
+                    was_healthy = True
+            else:
+                self._health_fails += 1
+                if self._health_fails == 3:
+                    self._healthy = False
+                    if was_healthy:
+                        logger.critical(
+                            f"[VieNeuHTTP] TTS SERVER UNREACHABLE — 3 consecutive health "
+                            f"failures @ {self._health}. Avatar sẽ mất tiếng cho mọi /human "
+                            f"call mới. Check vieneu_server.py log."
+                        )
+                        was_healthy = False
+                elif self._health_fails > 3 and self._health_fails % 10 == 0:
+                    logger.warning(f"[VieNeuHTTP] still unreachable ({self._health_fails} probes)")
 
     def _prewarm(self) -> None:
         """Warm-up TTS pipeline ngay sau init — tránh cold-start TTFB ~2-5s
@@ -304,12 +371,18 @@ class VieNeuHttpTTS(BaseTTS):
                 if emit_buf.size > 0:
                     pad = (self.chunk - emit_buf.size % self.chunk) % self.chunk
                     if pad > 0:
-                        emit_buf = np.concatenate([emit_buf, np.zeros(pad, dtype=np.float32)])
+                        # Pad với noise floor (không zeros) — tránh silence
+                        # fingerprint ở cuối câu (TikTok audio classifier nhận
+                        # ra silent edge của TTS sentences).
+                        emit_buf = np.concatenate([emit_buf, self._silence_chunk(pad)])
                     emit_buf = self._drain_buffer(emit_buf, text, textevent, True)
                 eventpoint = {"status": "end", "text": text}
                 if textevent:
                     eventpoint.update(textevent)
-                self.parent.put_audio_frame(np.zeros(self.chunk, dtype=np.float32), eventpoint)
+                # End-marker chunk: noise floor thay vì silence — base_avatar
+                # vẫn nhận eventpoint status:end nhưng signal audio không phải
+                # digital zero.
+                self.parent.put_audio_frame(self._silence_chunk(self.chunk), eventpoint)
 
         logger.info(
             f"[VieNeuHTTP] Total stream: {time.perf_counter() - start:.2f}s "

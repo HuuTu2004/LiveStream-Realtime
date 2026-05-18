@@ -13,6 +13,7 @@
 import asyncio
 import copy
 import json
+import os
 import random
 from threading import Thread, Event
 from typing import Dict
@@ -34,6 +35,47 @@ opt = None
 model = None
 global_avatars = {}   # avatar_id → payload
 load_avatar = None    # gán trong main() sau khi import avatar module
+
+
+# Paths bypass auth — UI bootstrap + health probe + static. Mọi POST + WS đều
+# yêu cầu token nếu --api_key được set.
+_AUTH_BYPASS_PATHS = frozenset(("/", "/health", "/preview-info", "/favicon.ico"))
+_AUTH_BYPASS_PREFIXES = ("/static/", "/web/")
+
+
+@web.middleware
+async def auth_middleware(request, handler):
+    """Bearer-token gate cho POST endpoints + WS.
+
+    Token đọc từ header `Authorization: Bearer <key>` hoặc query param `?key=<key>`
+    (cho WS — browser EventSource/WebSocket không set custom header dễ dàng).
+    """
+    expected = request.app.get("api_key") or ""
+    if not expected:
+        return await handler(request)
+
+    path = request.path
+    # GET cho static/UI/health — không cần auth (UI bootstrap)
+    if request.method == "GET":
+        if path in _AUTH_BYPASS_PATHS:
+            return await handler(request)
+        if any(path.startswith(p) for p in _AUTH_BYPASS_PREFIXES):
+            return await handler(request)
+
+    # Extract token: Authorization header trước, fallback query param
+    auth_hdr = request.headers.get("Authorization", "")
+    token = ""
+    if auth_hdr.startswith("Bearer "):
+        token = auth_hdr[7:].strip()
+    if not token:
+        token = (request.query.get("key", "") or "").strip()
+
+    if token != expected:
+        return web.json_response(
+            {"code": -1, "msg": "unauthorized — Bearer token required"},
+            status=401,
+        )
+    return await handler(request)
 
 
 def randN(N: int) -> int:
@@ -121,7 +163,11 @@ def main():
         warm_up(opt.batch_size, global_avatars[opt.avatar_id], 160)
 
     # ─── Init session manager + render thread cho session '0' ─────────────
-    session_manager.init_builder(build_avatar_session)
+    session_manager.init_builder(build_avatar_session, max_session=opt.max_session)
+
+    # Thread data_dir vào live_manager trước mọi live op (auto_resume đọc disk state).
+    from brain import live_manager as _lm
+    _lm.configure(opt.data_dir)
 
     # Tất cả transport hiện tại đều cần render thread chạy session '0' liên tục
     # (đẩy avatar idle/silence frames vào output kể cả khi không nói).
@@ -131,8 +177,21 @@ def main():
     rendthrd.start()
 
     # ─── aiohttp app ──────────────────────────────────────────────────────
-    appasync = web.Application(client_max_size=1024 ** 2 * 100)
+    # Auth: ưu tiên --api_key, fallback env LIVETALKING_API_KEY. Rỗng = disable.
+    api_key = (getattr(opt, "api_key", "") or os.environ.get("LIVETALKING_API_KEY", "")).strip()
+    middlewares = []
+    if api_key:
+        middlewares.append(auth_middleware)
+        logger.info('API auth ENABLED — Bearer token required for POST + WS')
+    else:
+        logger.info('API auth disabled (set --api_key hoặc env LIVETALKING_API_KEY để bật)')
+
+    appasync = web.Application(
+        client_max_size=1024 ** 2 * 100,
+        middlewares=middlewares,
+    )
     appasync["opt"] = opt
+    appasync["api_key"] = api_key
 
     appasync.router.add_get("/preview-info", preview_info)
     setup_routes(appasync)
@@ -155,21 +214,32 @@ def main():
             from studio.routes import setup_studio_routes
             setup_studio_routes(appasync)
             logger.info('Studio Portal enabled at /studio/*')
+        except ImportError as e:
+            # Studio là module optional — không cài thì disable, không fail app.
+            logger.error('Studio Portal disabled (module missing): %s', e)
+            opt.studio_enabled = False
         except Exception:
-            logger.exception('Studio Portal init failed')
+            logger.exception('Studio Portal init failed — disabling for this run')
+            opt.studio_enabled = False
 
     # ─── Auto-start brain ─────────────────────────────────────────────
+    # Track failure state để /health phản ánh được "brain bật cấu hình nhưng
+    # crash khi init" (vd LLM key sai, prompt module thiếu).
     if getattr(opt, 'brain_enabled', False):
         async def _autostart_brain():
             try:
                 from brain.brain_manager import get_or_create_brain
                 avatar = session_manager.get_session('0')
-                if avatar is not None:
-                    brain = await get_or_create_brain(opt, avatar)
-                    await brain.start()
-                    logger.info('Auto-started brain for sessionid=0')
+                if avatar is None:
+                    logger.error('auto-start brain: session 0 chưa sẵn sàng')
+                    return
+                brain = await get_or_create_brain(opt, avatar)
+                await brain.start()
+                logger.info('Auto-started brain for sessionid=0')
+            except ImportError as e:
+                logger.error('auto-start brain failed: dependency missing (%s)', e)
             except Exception:
-                logger.exception('auto-start brain failed')
+                logger.exception('auto-start brain failed — brain sẽ OFF')
         appasync.on_startup.append(lambda app: _autostart_brain())
 
     # ─── Auto-resume live scrape from disk (survive app restart) ─────
@@ -177,8 +247,10 @@ def main():
         try:
             from brain.live_manager import auto_resume
             await auto_resume(opt, session_manager.get_session)
+        except ImportError as e:
+            logger.error('auto_resume live skipped: dependency missing (%s)', e)
         except Exception:
-            logger.exception('auto_resume live failed')
+            logger.exception('auto_resume live failed — listener không tự bật lại')
     appasync.on_startup.append(lambda app: _autoresume_live())
 
     # ─── Static frontend (CUỐI cùng — sau khi tất cả route động đã register) ─

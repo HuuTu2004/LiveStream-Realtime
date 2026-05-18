@@ -268,6 +268,77 @@ async def wsstream(request):
 
 # ─── 路由注册 ──────────────────────────────────────────────────────────────
 
+async def health_check(request):
+    """Subsystem health snapshot — dùng cho ops monitoring + UI alert.
+
+    Trả về 200 với body JSON describing per-subsystem state. Status overall:
+      ok       — mọi subsystem sống
+      degraded — TTS unhealthy hoặc live_expired (vẫn serve được)
+      down     — session '0' không có (app chưa init xong)
+    """
+    opt = request.app.get("opt")
+    out = {
+        "status": "ok",
+        "subsystems": {},
+        "sessions": {
+            "active": session_manager._count_active(),
+            "max": getattr(opt, "max_session", None),
+        },
+    }
+    # Session '0' = baseline render thread
+    sess0 = session_manager.get_session('0')
+    out["subsystems"]["avatar_session_0"] = sess0 is not None
+
+    # TTS health (vieneu_http expose is_healthy())
+    if sess0 is not None:
+        tts = getattr(sess0, "tts", None)
+        if tts is not None and hasattr(tts, "is_healthy"):
+            out["subsystems"]["tts"] = bool(tts.is_healthy())
+        else:
+            out["subsystems"]["tts"] = True  # plugin không expose → assume OK
+    else:
+        out["subsystems"]["tts"] = False
+
+    # Brain
+    try:
+        from brain.brain_manager import get_brain
+        brain = get_brain('0')
+        out["subsystems"]["brain"] = bool(brain and brain._running)
+    except ImportError:
+        out["subsystems"]["brain"] = False
+
+    # Live (TikTok scraper)
+    try:
+        from brain.live_manager import get_live
+        live = get_live('0')
+        if live is not None and live._running:
+            listener_stats = live._listener.stats() if live._listener else {}
+            out["subsystems"]["live"] = {
+                "platform": live._platform,
+                "live_id": live._live_id,
+                "connected": bool(listener_stats.get("connected", False)),
+                "last_error": listener_stats.get("last_error", ""),
+            }
+        else:
+            out["subsystems"]["live"] = False
+    except ImportError:
+        out["subsystems"]["live"] = False
+
+    out["subsystems"]["studio"] = bool(getattr(opt, "studio_enabled", True))
+    out["subsystems"]["auth"] = bool(request.app.get("api_key"))
+
+    # Overall verdict
+    if not out["subsystems"]["avatar_session_0"]:
+        out["status"] = "down"
+    elif not out["subsystems"]["tts"]:
+        out["status"] = "degraded"
+    elif isinstance(out["subsystems"]["live"], dict) and not out["subsystems"]["live"]["connected"]:
+        out["status"] = "degraded"
+
+    status_code = 200 if out["status"] != "down" else 503
+    return web.json_response(out, status=status_code)
+
+
 async def avatar_swap(request):
     """Hot-swap avatar of running session without restart.
     POST {sessionid: "0", avatar_id: "..."}.
@@ -304,5 +375,6 @@ def setup_routes(app):
     app.router.add_post("/is_speaking", is_speaking)
     app.router.add_get("/wsstream/{sessionid}", wsstream)
     app.router.add_post("/avatar/swap", avatar_swap)
+    app.router.add_get("/health", health_check)
     # NOTE: static '/' route phải đặt CUỐI cùng — không thì sẽ swallow các path khác
     # đăng ký sau (vd /studio/* ở studio.routes). Để studio_routes tự add prefix riêng.
