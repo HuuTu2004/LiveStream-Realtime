@@ -2,6 +2,8 @@
 #  Output — 虚拟摄像头输出
 ###############################################################################
 
+import os
+
 import numpy as np
 from streamout.base_output import BaseOutput
 from registry import register
@@ -29,12 +31,17 @@ class VirtualCamOutput(BaseOutput):
     def _play_audio_loop(self):
         import pyaudio
         p = pyaudio.PyAudio()
+        # base_avatar đẩy f32le PCM [-1.0, 1.0] → mở stream paFloat32.
+        # output_device_index=None = default playback device (đổi qua env nếu cần
+        # route sang VB-CABLE cho OBS: LIVETALKING_AUDIO_OUT_INDEX=<idx>).
+        dev_idx_env = os.environ.get("LIVETALKING_AUDIO_OUT_INDEX")
+        dev_idx = int(dev_idx_env) if dev_idx_env else None
         stream = p.open(
             rate=16000,
             channels=1,
-            format=8,
+            format=pyaudio.paFloat32,
             output=True,
-            output_device_index=1,
+            output_device_index=dev_idx,
         )
         stream.start_stream()
         import queue
