@@ -79,7 +79,9 @@ def load_avatar(avatar_id):
 
     # weights_only=False: latents.pt là list[Tensor] đã prepare từ pre-process,
     # torch >= 2.6 default weights_only=True sẽ reject list pickled object.
-    input_latent_list_cycle = torch.load(latents_out_path, weights_only=False)
+    # .to(device): latents có thể được save trên CPU hoặc GPU khác — ensure khớp UNet.
+    input_latent_list_cycle = torch.load(latents_out_path, weights_only=False, map_location=device)
+    input_latent_list_cycle = [t.to(device) if hasattr(t, 'to') else t for t in input_latent_list_cycle]
     with open(coords_path, 'rb') as f:
         coord_list_cycle = pickle.load(f)
     frame_list_cycle = None

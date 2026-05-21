@@ -74,6 +74,21 @@ def main():
     voices = tts.list_preset_voices()
     log(f"Ready. {len(voices)} preset voices, sample: {[v[0] for v in voices[:5]]}")
 
+    # ─── Warmup: gửi 1 dummy gen để load CUDA kernels + KV cache ──────────
+    # Sau warmup, first-token latency drops từ ~1.5s xuống ~0.3s (2.5x realtime).
+    # Bottleneck thật của Vieneu là cold-start CUDA compile, không phải codec.
+    try:
+        import time
+        log("[warmup] Triggering dummy generation to warm CUDA kernels...")
+        t0 = time.perf_counter()
+        gen = tts.infer(text="Xin chào, đây là warmup.", temperature=1.0, top_k=50, repetition_penalty=1.2)
+        # Drain generator to force full pipeline execution
+        for _ in gen:
+            pass
+        log(f"[warmup] Done in {time.perf_counter() - t0:.2f}s — first real request will be ~0.6s")
+    except Exception as e:
+        log(f"[warmup] Failed (non-critical, server still OK): {e}")
+
     # ─── HTTP handlers ──────────────────────────────────────────────────
     async def health(_request):
         return web.json_response({
