@@ -92,10 +92,13 @@ _OPENERS_AVOID = (
     "Linh chào", "Mọi người ơi",
 )
 _PRICE_WORDS = ("giá", "bao nhiêu", "nhiêu tiền", "nhiêu ạ", "rẻ không", "đắt không")
-_SIZE_WORDS = ("size", "kg", "cao", "nặng", "mặc được không", "vừa không", "số mấy")
+# Generic "spec" intent — bám sát product_info (size cho thời trang, dung tích cho gia
+# dụng, thông số kỹ thuật cho điện tử...). LLM tự đọc product_info để trả lời chuẩn.
+_SIZE_WORDS = ("size", "kích cỡ", "kích thước", "dung tích", "công suất", "thông số",
+               "bao to", "lớn không", "nhỏ không", "có hợp", "phù hợp", "dùng được không")
 _ASK_WORDS = (
-    "?", "không", "có không", "chất", "vải", "ship", "đổi", "trả", "như thế nào",
-    "được không", "dày", "mỏng", "dài", "rộng", "co rút", "xù lông",
+    "?", "không", "có không", "chất", "chất lượng", "ship", "đổi", "trả",
+    "như thế nào", "được không", "bảo hành", "pin", "sạc", "dùng",
 )
 
 _JOIN_GREETINGS = [
@@ -414,18 +417,18 @@ class CommentHandler:
                 f"1. **LọC RÁC** (bỏ qua, KHÔNG nhắc): spam / troll / ký tự vô nghĩa / quảng cáo / "
                 f"comment tục tĩu / chính trị / chào nhau riêng giữa khách.\n"
                 f"   → Nếu cả batch toàn rác → trả về '' (empty).\n\n"
-                f"2. **GỘP TRÙNG**: nhiều bạn hỏi 1 thứ (size/giá/màu/ship/mã) → trả lời CHUNG 1 lần.\n\n"
+                f"2. **GỘP TRÙNG**: nhiều bạn hỏi 1 thứ (giá/thông số/phân loại/ship/mã/bảo hành) → trả lời CHUNG 1 lần.\n\n"
                 f"3. **ƯU TIÊN** (giảm dần):\n"
                 f"   a. Khách hỏi mã/code cụ thể → confirm + tư vấn sản phẩm đó\n"
-                f"   b. Hỏi giá/size/màu/ship → trả lời từ info sản phẩm trên\n"
+                f"   b. Hỏi giá/thông số/phân loại/ship → trả lời từ info sản phẩm trên\n"
                 f"   c. So sánh / băn khoăn → giải đáp + push CTA\n"
                 f"   d. Khen shop → cảm ơn nhẹ 1 câu, không spam cảm ơn\n"
                 f"   e. Comment vu vơ → bỏ qua nếu batch đã đủ nội dung\n\n"
                 f"4. **TRÁNH LẶP — đa dạng cách mở đầu**:\n"
                 f"   - KHÔNG bắt đầu bằng: {avoid_str}\n"
                 f"   - Vào thẳng nội dung. Ví dụ: 'Bạn [tên] hỏi về...', 'Mã 18 đúng rồi nha', "
-                f"'Size M phù hợp 50-55kg đó', 'Quần này lưng cao tôn dáng cực kỳ...', "
-                f"'À đúng rồi, mặc combo còn được giảm thêm...', 'Bạn ơi để Linh nói cho nghe...'\n"
+                f"'Phân loại này cực hợp với bạn đó', 'Sản phẩm này có ưu điểm lớn nhất là...', "
+                f"'À đúng rồi, mua combo còn được giảm thêm...', 'Bạn ơi để Linh nói cho nghe...'\n"
                 f"   - Mỗi lần mở đầu phải KHÁC nhau, không lặp pattern.\n\n"
                 f"5. **FORMAT**:\n"
                 f"   - 2-5 câu nói trôi chảy, gọi tên khách 1-2 lần\n"

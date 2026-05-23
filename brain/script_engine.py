@@ -26,9 +26,10 @@ SALES_CYCLE = [
     {
         "stage": "NỖI ĐAU",
         "prompt": (
-            "Chia sẻ sâu sắc về những vấn đề khách thường gặp: mua hàng online không giống hình, "
-            "vải mặc nóng, hay sợ nhất là sai kích cỡ không đổi trả được. Đồng cảm với khách hàng "
-            "và khẳng định Linh ở đây để giúp bạn giải quyết triệt để nỗi lo đó. 4 câu thấu hiểu."
+            "Chia sẻ sâu sắc về những vấn đề khách thường gặp khi mua online — DỰA TRÊN ĐẶC TÍNH SẢN PHẨM "
+            "đang bán trong product_info (ví dụ: mua không giống hình, chất lượng kém, dùng vài lần hỏng, "
+            "thông số không như quảng cáo, không bảo hành...). Đồng cảm với khách hàng và khẳng định Linh ở "
+            "đây để giúp bạn giải quyết triệt để nỗi lo đó. 4 câu thấu hiểu."
         ),
     },
     {
@@ -42,9 +43,9 @@ SALES_CYCLE = [
     {
         "stage": "GIÁ TRỊ",
         "prompt": (
-            "Đi sâu vào giá trị thực tế: cảm giác thoải mái khi mặc, độ bền vượt trội theo thời gian, "
-            "và sự tự tin mà khách hàng sẽ có được khi sở hữu nó. Dùng mô hình FAB để thuyết phục khách. "
-            "5 câu giàu hình ảnh và thuyết phục."
+            "Đi sâu vào giá trị thực tế của sản phẩm đang bán (theo product_info): trải nghiệm khi dùng, "
+            "độ bền vượt trội theo thời gian, lợi ích cụ thể khách hàng nhận được khi sở hữu. Dùng mô hình "
+            "FAB (Feature-Advantage-Benefit) để thuyết phục. 5 câu giàu hình ảnh và thuyết phục."
         ),
     },
     {
@@ -66,9 +67,10 @@ SALES_CYCLE = [
     {
         "stage": "KHAN HIẾM",
         "prompt": (
-            "Cảnh báo số lượng trong kho chỉ còn tính bằng đầu ngón tay cho mỗi size/màu. Nhấn mạnh "
-            "rằng lô hàng sau sẽ không còn giá này hoặc phải đợi rất lâu mới có hàng lại. "
-            "Thúc giục những ai còn đang cân nhắc hãy quyết định ngay kẻo hối tiếc. 4 câu khẩn cấp."
+            "Cảnh báo số lượng trong kho chỉ còn tính bằng đầu ngón tay cho mỗi phân loại (nếu sản phẩm "
+            "có nhiều phân loại/màu/size — kiểm tra product_info). Nhấn mạnh rằng lô hàng sau sẽ không còn "
+            "giá này hoặc phải đợi rất lâu mới có hàng lại. Thúc giục những ai còn đang cân nhắc hãy quyết "
+            "định ngay kẻo hối tiếc. 4 câu khẩn cấp."
         ),
     },
     {
@@ -87,7 +89,7 @@ _RANDOM_EVENTS = [
         "name": "flash_sale",
         "interval": (900, 1800),
         "prompts": [
-            "Thôi shop giảm thêm 30k cho 5 đơn tới trong 3 phút! Ai muốn thì comment SIZE xuống ngay!",
+            "Thôi shop giảm thêm 30k cho 5 đơn tới trong 3 phút! Ai muốn thì comment MUA xuống ngay!",
             "Flash deal nhanh nha — giảm thêm 20k cho ai chốt trong 2 phút tới, comment CHỐT đi!",
             "Nè nè, shop vừa quyết định tặng freeship cho 10 đơn tiếp theo — ai nhanh tay thì comment ngay nha!",
         ],
@@ -96,9 +98,9 @@ _RANDOM_EVENTS = [
         "name": "stock_warning",
         "interval": (1200, 2400),
         "prompts": [
-            "Ơ shop vừa check kho... màu này size M còn 3 cái thôi á, ai muốn nhanh lên nha!",
-            "Check lại thấy size L đang cạn nhanh rồi, ai cần thì chốt trước kẻo hết nha.",
-            "Màu trắng hết trước rồi đó, chỉ còn màu tối thôi — ai thích màu trắng thì nhanh nha!",
+            "Ơ shop vừa check kho... còn vài cái cuối thôi á, ai muốn nhanh lên nha!",
+            "Check lại thấy đang cạn nhanh rồi, ai cần thì chốt trước kẻo hết nha.",
+            "Mấy phân loại hot nhất đang gần hết rồi đó — ai thích thì nhanh tay chốt nha!",
         ],
     },
     {
@@ -115,7 +117,7 @@ _RANDOM_EVENTS = [
         "interval": (300, 600),
         "prompts": [
             "Mà này bạn ơi, ai đang xem từ tỉnh nào comment xuống cho Linh biết với nha!",
-            "Hỏi nhanh nha: mọi người thường hay mặc màu tối hay màu sáng? Comment xuống đi!",
+            "Hỏi nhanh nha: mọi người ưu tiên giá rẻ hay chất lượng tốt hơn? Comment xuống đi!",
             "Ai đang xem mà chưa follow thì follow nha — live sau Linh có deal khủng cho người follow đó!",
             "Share livestream này giúp Linh với nha, ai share được Linh tặng thêm quà cuối buổi nha!",
             "Mọi người đang xem từ điện thoại hay máy tính vậy? Comment xuống cho Linh biết nha haha.",
