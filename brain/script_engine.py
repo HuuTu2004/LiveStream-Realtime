@@ -232,7 +232,7 @@ class ScriptEngine:
             if self._viewer_count >= milestone and milestone not in self._viewer_milestones_hit:
                 self._viewer_milestones_hit.add(milestone)
                 log.info("[ScriptEngine] Cột mốc %d người xem", milestone)
-                await self._safe_speak(msg, priority=False)
+                await self._safe_speak(msg, priority=False, raw=True)
                 return True
         return False
 
@@ -241,7 +241,7 @@ class ScriptEngine:
             if elapsed >= threshold and threshold not in self._time_milestones_done:
                 self._time_milestones_done.add(threshold)
                 log.info("[ScriptEngine] Cột mốc %ds", threshold)
-                await self._safe_speak(msg, priority=False)
+                await self._safe_speak(msg, priority=False, raw=True)
                 return True
         return False
 
@@ -250,7 +250,7 @@ class ScriptEngine:
             if now >= self._event_next.get(ev["name"], float("inf")):
                 msg = random.choice(ev["prompts"])
                 log.info("[ScriptEngine] Sự kiện: %s", ev["name"])
-                await self._safe_speak(msg, priority=False)
+                await self._safe_speak(msg, priority=False, raw=True)
                 lo, hi = ev["interval"]
                 self._event_next[ev["name"]] = now + random.randint(lo, hi)
                 return True
@@ -286,11 +286,15 @@ class ScriptEngine:
     async def _fire_silence(self) -> None:
         await self._fire_stage_prompt(reason="silence")
 
-    async def _safe_speak(self, prompt: str, priority: bool = False) -> None:
+    async def _safe_speak(self, prompt: str, priority: bool = False, raw: bool = False) -> None:
         if not self._speak_fn:
             return
         try:
-            await self._speak_fn(prompt, priority=priority)
+            try:
+                await self._speak_fn(prompt, priority=priority, raw=raw)
+            except TypeError:
+                # speaker chưa hỗ trợ raw= (backward compat)
+                await self._speak_fn(prompt, priority=priority)
         except Exception:
             log.exception("[ScriptEngine] speak_fn error")
 
