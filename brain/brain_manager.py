@@ -15,10 +15,7 @@ avatar_session.put_msg_txt() là thread-safe (đẩy vào queue).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import random
-import re
 import time
 from typing import Optional, TYPE_CHECKING
 
@@ -27,20 +24,6 @@ from .product_catalog import ProductCatalog
 from .script_engine import ScriptEngine
 from .comment_handler import CommentHandler
 from .sentence_splitter import SentenceSplitter
-from utils.logger import logger as _file_logger
-
-# Template-output cache: tiết kiệm LLM token cho 8-stage SALES_CYCLE.
-# Cache value = list[(expiry_ts, sentences_list)] — random pick để có biến thể.
-_TEMPLATE_CACHE_TTL = 3600.0
-_TEMPLATE_CACHE_MIN_VARIANTS = 1
-_TEMPLATE_CACHE_MAX_VARIANTS = 4
-# Khi cache đã có variant, % chance bỏ qua HIT để gọi LLM thêm variant.
-# Giúp có chút biến thể mà vẫn save ~80% token. 0 = no refresh, 100% HIT.
-_TEMPLATE_CACHE_REFRESH_PROB = 0.15
-
-_SENT_SPLIT_RE = re.compile(
-    r"(?<![\d,])\.(?![\d,])|[!?。！？\n]",
-)
 
 if TYPE_CHECKING:
     from avatars.base_avatar import BaseAvatar
@@ -125,29 +108,6 @@ class BrainManager:
         self._current_stage = self.script_engine.current_stage()
         self._last_text: str = ""
 
-        # Template cache (8-stage SALES_CYCLE) — key: sha256(prompt|product_id)[:16]
-        # Value: list[(expiry_ts, merged_text)]. 1h TTL, variants per key.
-        # Mỗi hit cache → random pick để câu nói không lặp y nguyên.
-        # Store MERGED text (không list câu) để push 1 TTS request — vieneu
-        # server tự handle streaming câu, tránh TTFT gap 0.5-2s/câu.
-        self._template_cache: dict[str, list[tuple[float, str]]] = {}
-        self._template_cache_ttl = float(getattr(opt, "template_cache_ttl", _TEMPLATE_CACHE_TTL))
-        self._template_cache_min = int(getattr(opt, "template_cache_min_variants", _TEMPLATE_CACHE_MIN_VARIANTS))
-        self._template_cache_max = int(getattr(opt, "template_cache_max_variants", _TEMPLATE_CACHE_MAX_VARIANTS))
-        self._template_cache_refresh_prob = float(
-            getattr(opt, "template_cache_refresh_prob", _TEMPLATE_CACHE_REFRESH_PROB)
-        )
-        self._cache_hits = 0
-        self._cache_misses = 0
-        # Pre-queue target: brain fire stage kế khi TTS msgqueue depth < này.
-        # =2 nghĩa là: brain luôn pre-queue 1 stage trước TTS đang xử lý.
-        # Khi TTS pull current (qsize 2→1), brain fire ngay (qsize 1→2).
-        # TTS finish current → pull next instantly = KHÔNG GAP 1.5s TTFT.
-        # =1 = tight (chỉ fire khi qsize=0 = TTS đã pull) → có thể silence
-        # 1-2s nếu next msg chưa kịp queue.
-        # =3+ = đệm nhiều stage, latency comment interrupt cao hơn.
-        self._tts_prefetch_target = int(getattr(opt, "tts_prefetch_target", 2))
-
         # Switch product callback hook (UI dashboard tự subscribe nếu cần)
         self._switch_product_listeners: list = []
         self.comments.set_switch_product_callback(self._on_switch_product_idx)
@@ -195,173 +155,49 @@ class BrainManager:
 
     # ------------------------------------------------------------------
     def is_idle(self) -> bool:
-        """True khi ScriptEngine nên fire câu kế để giữ TTS pipeline đầy.
+        """True khi ScriptEngine nên fire câu kế để giữ buffer đầy.
 
-        Cơ chế nối liên tục:
-          1. Check TTS msgqueue depth: nếu < prefetch_target (default 1),
-             fire NGAY để pre-queue stage kế trước khi TTS hết việc → tránh
-             TTFT gap 1-2s giữa các stage (đây là nguồn gốc 'khoảng lặng').
-          2. Backup: nếu msgqueue đầy nhưng audio buffer estimate sắp cạn,
-             vẫn fire (defense in depth — buffer estimate có thể wrong).
+        Time-based: ước tính `remaining = _buffer_drain_at - now` (giây audio
+        còn trong queue). Trả True khi remaining < target_buffer → fire LLM
+        câu kế ngay, kịp đẩy text vào TTS trước khi audio queue cạn.
 
-        Pre-queue model:
-          msgqueue=[stage_cur, stage_next] (target depth 2)
-          TTS xử lý stage_cur → audio queue.
-          Khi TTS pull stage_cur ra (msgqueue=[stage_next]) → qsize=1 = prefetch.
-            Brain fire stage_next2 → msgqueue=[stage_next, stage_next2].
-          TTS finishes stage_cur → pulls stage_next IMMEDIATELY (no gap).
+        Đảm bảo KHÔNG khựng: target_buffer chọn > LLM TTFT điển hình. Mặc định
+        3s = đủ cover LLM 1-3s. Khi avatar phát đến điểm còn 3s reserve,
+        ScriptEngine fire → LLM 2s xong → câu mới vào TTS khi reserve còn 1s
+        → avatar nuốt tiếp không cảm giác gián đoạn.
 
-        Khi `target_buffer_secs` được set rất nhỏ (default 1.5s) thì check
-        audio buffer ít có ý nghĩa — pre-queue là cơ chế chính.
+        Silent-correction: nếu avatar im lặng thực tế kéo dài hơn estimate
+        (TTS chậm hơn ước tính), đồng bộ _buffer_drain_at = now để giải kẹt.
         """
         if self._speak_lock.locked():
             return False
 
-        # CƠ CHẾ CHÍNH: pre-queue TTS — fire khi msgqueue depth < prefetch.
-        try:
-            tts_q = self.avatar_session.tts.msgqueue.qsize()
-        except Exception:
-            tts_q = 0
-        if tts_q < self._tts_prefetch_target:
-            # Sample log: 1/20 polls để không spam (poll mỗi 0.1s = log 0.5/s).
-            if random.random() < 0.05:
-                _file_logger.info("[Brain] is_idle=True tts_qsize=%d (< %d prefetch)",
-                                  tts_q, self._tts_prefetch_target)
-            return True
-
-        # Backup: buffer-estimate (đề phòng TTS msgqueue accessor fail).
         try:
             speaking = self.avatar_session.is_speaking()
         except Exception:
+            log.debug("[Brain] is_speaking() probe failed", exc_info=True)
             speaking = False
 
         now = time.monotonic()
+
         if speaking:
             self._silent_polls = 0
         else:
             self._silent_polls += 1
             if self._silent_polls >= self._silent_sync_polls:
+                # Avatar silent thực sự lâu hơn estimate → sync về now.
+                # Không trừ về 0 hẳn để vẫn còn 1 chút momentum cho fire kế.
                 self._buffer_drain_at = min(self._buffer_drain_at, now)
 
         remaining = self._buffer_drain_at - now
+        # Threshold = safety_margin + LLM duration EMA → fire đủ sớm để câu
+        # kế xong LLM TRƯỚC khi buffer cạn. Cộng EMA mới là điểm cốt lõi để
+        # không khựng khi LLM chậm.
         threshold = self._target_buffer_secs + self._llm_duration_ema
         return remaining < threshold
 
     # ------------------------------------------------------------------
-    def _template_cache_key(self, prompt: str) -> str:
-        product = self.catalog.current_product() or {}
-        pid = str(product.get("id", ""))
-        h = hashlib.sha256(f"{prompt}|{pid}".encode("utf-8")).hexdigest()[:16]
-        return h
-
-    def _template_cache_get(self, key: str) -> Optional[str]:
-        now = time.monotonic()
-        variants = self._template_cache.get(key, [])
-        fresh = [(exp, txt) for exp, txt in variants if exp > now]
-        if len(fresh) != len(variants):
-            self._template_cache[key] = fresh
-        if len(fresh) < self._template_cache_min:
-            return None
-        # Có đủ min variants. Nếu chưa đầy max và roll refresh → gọi LLM thêm.
-        if (len(fresh) < self._template_cache_max
-                and random.random() < self._template_cache_refresh_prob):
-            return None
-        return random.choice(fresh)[1]
-
-    def _template_cache_put(self, key: str, text: str) -> None:
-        text = (text or "").strip()
-        if not text:
-            return
-        now = time.monotonic()
-        bucket = self._template_cache.setdefault(key, [])
-        bucket.append((now + self._template_cache_ttl, text))
-        if len(bucket) > self._template_cache_max:
-            # Drop oldest by expiry (FIFO ish)
-            bucket.sort(key=lambda x: x[0])
-            del bucket[: len(bucket) - self._template_cache_max]
-
-    @staticmethod
-    def _split_into_sentences(text: str) -> list[str]:
-        """Cắt text canned thành câu để put_msg_txt từng câu (TTS streams tốt hơn)."""
-        text = (text or "").strip()
-        if not text:
-            return []
-        parts: list[str] = []
-        buf: list[str] = []
-        for ch in text:
-            buf.append(ch)
-            if _SENT_SPLIT_RE.match(ch):
-                s = "".join(buf).strip()
-                if s:
-                    parts.append(s)
-                buf = []
-        tail = "".join(buf).strip()
-        if tail:
-            parts.append(tail)
-        return parts or [text]
-
-    async def speak_raw(self, text: str, priority: bool = False) -> None:
-        """Push canned text thẳng vào TTS, BỎ QUA LLM. Tiết kiệm token cho
-        random events / viewer milestones / time milestones.
-
-        QUAN TRỌNG: KHÔNG split câu ở client. Đẩy nguyên text vào TTS — vieneu
-        server tự handle streaming liên tục, tránh TTFT gap 0.5-2s/câu."""
-        if not self._running:
-            return
-        text = (text or "").strip()
-        if not text:
-            return
-        await self._speak_canned(text, priority=priority, source="raw")
-
-    async def _speak_canned(
-        self, text: str, priority: bool, source: str
-    ) -> None:
-        """Internal — đẩy canned/cached text qua TTS với cùng locking và buffer
-        accounting như speak() LLM-stream.
-
-        Push 1 put_msg_txt cho TOÀN BỘ text (không split câu) — vieneu lib bên
-        server tự stream liên tục, không có TTFT gap giữa các câu."""
-        if not text:
-            return
-        if priority:
-            self._priority_count += 1
-            cur = getattr(self, "_current_speak_task", None)
-            cur_is_priority = getattr(self, "_current_is_priority", False)
-            if cur is not None and not cur.done() and not cur_is_priority:
-                cur.cancel()
-                try:
-                    self.avatar_session.flush_talk()
-                except Exception:
-                    log.exception("[Brain] flush_talk on interrupt")
-                self._buffer_drain_at = time.monotonic()
-        try:
-            async with self._speak_lock:
-                if not self._running:
-                    return
-                self._current_speak_task = asyncio.current_task()
-                self._current_is_priority = priority
-                self.avatar_session.put_msg_txt(text)
-                self._last_text = text
-                now = time.monotonic()
-                total_chars = len(text)
-                duration = total_chars / self._tts_chars_per_sec
-                self._buffer_drain_at = max(now, self._buffer_drain_at) + duration
-                log.debug(
-                    "[Brain] spoke[%s] (%d sent, %d chars, +%.1fs, priority=%s): %s",
-                    source, len(sentences), total_chars, duration, priority,
-                    self._last_text[:80],
-                )
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            log.exception("[Brain] speak_canned error")
-        finally:
-            self._current_speak_task = None
-            self._current_is_priority = False
-            if priority:
-                self._priority_count = max(0, self._priority_count - 1)
-
-    async def speak(self, prompt: str, priority: bool = False, raw: bool = False) -> None:
+    async def speak(self, prompt: str, priority: bool = False) -> None:
         """Đẩy 1 prompt qua LLM → SentenceSplitter → TTS → avatar.
 
         priority=True (comment/order/subscribe): INTERRUPT auto-pitch hiện
@@ -369,33 +205,11 @@ class BrainManager:
         là yếu tố then chốt cho UX bán hàng live — khách comment phải reply
         trong giây chứ không xếp hàng 1-4 phút sau auto-pitch.
 
-        priority=False (stage prompt): chờ lock FIFO bình thường. Stage
-        prompts CACHED 1h theo (prompt, product_id) để tiết kiệm LLM token.
-
-        raw=True: text đã canned (random events, milestones) — bỏ qua LLM,
-        đẩy thẳng vào TTS.
+        priority=False (stage prompt): chờ lock FIFO bình thường.
         """
         if not self._running:
             log.warning("[Brain] speak() called while not running")
             return
-
-        if raw:
-            await self.speak_raw(prompt, priority=priority)
-            return
-
-        # Stage template prompts (priority=False): check cache trước.
-        cache_key = None
-        if not priority:
-            cache_key = self._template_cache_key(prompt)
-            cached = self._template_cache_get(cache_key)
-            if cached is not None:
-                self._cache_hits += 1
-                _file_logger.info(
-                    "[Brain] cache HIT %s (%d chars) hits=%d misses=%d",
-                    cache_key, len(cached), self._cache_hits, self._cache_misses,
-                )
-                await self._speak_canned(cached, priority=False, source="cache")
-                return
 
         if priority:
             self._priority_count += 1
@@ -452,15 +266,6 @@ class BrainManager:
                     # captured/had_output có thể đã partial — vẫn account vào
                     # buffer nếu có để tránh fire chồng ngay sau timeout.
                 if had_output:
-                    # Cache template output (priority=False, có cache_key)
-                    if cache_key is not None:
-                        merged = " ".join(captured)
-                        self._template_cache_put(cache_key, merged)
-                        self._cache_misses += 1
-                        _file_logger.info(
-                            "[Brain] cache MISS → stored %s (%d chars) hits=%d misses=%d",
-                            cache_key, len(merged), self._cache_hits, self._cache_misses,
-                        )
                     self._last_text = " ".join(captured)
                     now = time.monotonic()
                     # Update LLM duration EMA (adaptive — tự điều chỉnh theo
@@ -579,17 +384,6 @@ class BrainManager:
     # ------------------------------------------------------------------
     def state(self) -> dict:
         cur = self.catalog.current_product()
-        # Cache stats: số key, tổng variants, oldest expiry còn lại
-        now = time.monotonic()
-        total_variants = 0
-        oldest_remaining = 0.0
-        for variants in self._template_cache.values():
-            for exp, _ in variants:
-                if exp > now:
-                    total_variants += 1
-                    rem = exp - now
-                    if oldest_remaining == 0 or rem < oldest_remaining:
-                        oldest_remaining = rem
         return {
             "sessionid": self.sessionid,
             "running": self._running,
@@ -602,20 +396,6 @@ class BrainManager:
                 "price": cur.get("price") if cur else None,
             } if cur else None,
             "last_text": self._last_text[:200],
-            "cache": {
-                "keys": len(self._template_cache),
-                "total_variants": total_variants,
-                "min_variants": self._template_cache_min,
-                "max_variants": self._template_cache_max,
-                "refresh_prob": self._template_cache_refresh_prob,
-                "ttl_secs": int(self._template_cache_ttl),
-                "oldest_expires_in_secs": int(oldest_remaining),
-                "hits": self._cache_hits,
-                "misses": self._cache_misses,
-                "hit_ratio": round(
-                    self._cache_hits / max(1, self._cache_hits + self._cache_misses), 3
-                ),
-            },
         }
 
 
