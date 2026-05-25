@@ -4,9 +4,12 @@
 #  scikit-learn/rich không import direct, mediapipe/TikTokLive conditional)
 #  → tiết kiệm ~400MB download + ~5 phút install
 #
-#  Dùng với: pip install -i https://mirrors.aliyun.com/pypi/simple/ \
+#  Dùng với: pip install -i https://pypi.org/simple/ \
 #                      --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu/ \
 #                      -r requirements_vast.txt
+#
+#  Note: aliyun mirror throttle xuống ~1 MB/s từ Vietnam Vast.AI nodes.
+#  pypi.org direct (Fastly CDN edge) ~50-100 Mbps cho VN + US nodes.
 # ════════════════════════════════════════════════════════════════════════
 
 # ─── HTTP server + async ──────────────────────────────────────────────

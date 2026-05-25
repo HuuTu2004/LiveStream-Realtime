@@ -94,14 +94,31 @@ fi
 REQ_FILE="scripts/vastai/requirements_vast.txt"
 [[ ! -f "${REQ_FILE}" ]] && REQ_FILE="requirements.txt"
 echo "[setup] venv_talking: pip install -r ${REQ_FILE}"
+# pypi.org direct (Fastly CDN, Singapore edge từ VN ~50-100 Mbps; aliyun từ
+# Vietnam thường throttle xuống 1 MB/s).
 pip install --no-cache-dir \
-  -i https://mirrors.aliyun.com/pypi/simple/ \
+  -i https://pypi.org/simple/ \
   --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu/ \
-  --extra-index-url https://pypi.org/simple/ \
   -r "${REQ_FILE}"
 
 # numpy có thể bị bump >=2.0 do dep tree → downgrade lại cho wav2lip
 pip install --no-cache-dir 'numpy<2.0' >/dev/null 2>&1 || true
+
+# Post-install fix: vieneu>=1.1.0 trong requirements có thể bump torch
+# (typically lên 2.10+cu128) → torchaudio bị bump theo lên 2.11+cu13 ABI
+# mismatch (expects libcudart.so.13). Detect torch version + cuda tag,
+# force-pin torchaudio để khớp. Idempotent — skip nếu đã match.
+TALKING_TORCH=$(python -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+TALKING_TA=$(python -c "import torchaudio; print(torchaudio.__version__)" 2>/dev/null || true)
+if [[ -n "$TALKING_TORCH" && -n "$TALKING_TA" ]]; then
+  T_VER=${TALKING_TORCH%%+*}; T_CUDA=${TALKING_TORCH##*+}
+  TA_VER=${TALKING_TA%%+*}
+  if [[ "$T_VER" != "$TA_VER" ]]; then
+    echo "[setup] venv_talking: torch=$TALKING_TORCH ≠ torchaudio=$TALKING_TA — pin to match"
+    pip install --no-cache-dir --index-url "https://download.pytorch.org/whl/${T_CUDA}" \
+      "torchaudio==${T_VER}" || echo "[WARN] torchaudio==${T_VER} cu=${T_CUDA} wheel không có"
+  fi
+fi
 
 # ─── 3. venv_lmdeploy (TTS backbone server, torch 2.4 cu121) ────────────────
 # Fresh venv vì lmdeploy 0.9.0 kéo theo xgrammar+tvm_ffi+torch_c_dlpack_ext
@@ -130,8 +147,7 @@ fi
 
 echo "[setup] venv_lmdeploy: pip install -r scripts/vastai/requirements_lmdeploy.txt"
 ${PY_LMD} -m pip install --no-cache-dir \
-  -i https://mirrors.aliyun.com/pypi/simple/ \
-  --extra-index-url https://pypi.org/simple/ \
+  -i https://pypi.org/simple/ \
   -r scripts/vastai/requirements_lmdeploy.txt
 
 # Post-install: lmdeploy bug đôi khi không khai báo deps đầy đủ
@@ -153,23 +169,34 @@ fi
 PY_VIENEU="${VENV_VIENEU_DIR}/bin/python"
 ${PY_VIENEU} -m pip install --upgrade pip setuptools wheel
 
-# Torch 2.4 cu121 cho venv_vieneu (production dùng ONNX codec, không cần
-# PyTorch neucodec 2.6+ nữa). vieneu lib chỉ cần transformers tokenizer.
-if ! ${PY_VIENEU} -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-  echo "[setup] venv_vieneu: installing torch 2.4 cu121..."
-  ${PY_VIENEU} -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
-    torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1
-fi
-
+# KHÔNG cài torch 2.4 cu121 trước nữa — vieneu[gpu] sẽ tự pull torch của
+# nó (hiện 2.10+cu128). Cài trước = bị upgrade trong requirements pip
+# install → phí 2GB download. Skip cho fast setup.
 echo "[setup] venv_vieneu: pip install -r scripts/vastai/requirements_vieneu.txt"
+echo "[setup]   (vieneu[gpu] sẽ tự pull torch 2.10+cu128)"
 ${PY_VIENEU} -m pip install --no-cache-dir \
-  -i https://mirrors.aliyun.com/pypi/simple/ \
-  --extra-index-url https://pypi.org/simple/ \
+  -i https://pypi.org/simple/ \
   -r scripts/vastai/requirements_vieneu.txt
 
-# Post-install: vieneu pull transformers 5.x đôi khi → downgrade <5.0.
-# Fix bug "torch.int1 attribute error" và "HubertModel import fail".
+# Post-install: transformers + torchao pin (vieneu pull 5.x/0.14+ kéo theo
+# torch._pytree.register_constant cần torch>=2.7 — gặp lỗi import).
 ${PY_VIENEU} -m pip install --no-cache-dir 'transformers>=4.51,<5.0' 'torchao>=0.9,<0.14' >/dev/null 2>&1 || true
+
+# Post-install: torchaudio ABI fix. vieneu[gpu] pull torch 2.10.0+cu128
+# nhưng pip resolver bump torchaudio lên 2.11.0+cu13 (expects
+# libcudart.so.13 — KHÔNG có trong môi trường cu12). Detect torch full
+# version + cuda tag, force-pin torchaudio để khớp.
+VIENEU_TORCH=$(${PY_VIENEU} -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+VIENEU_TA=$(${PY_VIENEU} -c "import torchaudio; print(torchaudio.__version__)" 2>/dev/null || true)
+if [[ -n "$VIENEU_TORCH" && -n "$VIENEU_TA" ]]; then
+  VT_VER=${VIENEU_TORCH%%+*}; VT_CUDA=${VIENEU_TORCH##*+}
+  VTA_VER=${VIENEU_TA%%+*}
+  if [[ "$VT_VER" != "$VTA_VER" ]]; then
+    echo "[setup] venv_vieneu: torch=$VIENEU_TORCH ≠ torchaudio=$VIENEU_TA — pin to match"
+    ${PY_VIENEU} -m pip install --no-cache-dir --index-url "https://download.pytorch.org/whl/${VT_CUDA}" \
+      "torchaudio==${VT_VER}" || echo "[WARN] torchaudio==${VT_VER} cu=${VT_CUDA} wheel không có"
+  fi
+fi
 
 # ─── 5. Data dirs ──────────────────────────────────────────────────────────
 mkdir -p data/avatars data/uploads/raw data/uploads/jobs data/uploads/previews models logs
