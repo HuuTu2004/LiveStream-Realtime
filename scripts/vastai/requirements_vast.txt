@@ -28,8 +28,11 @@ httpx>=0.27.0
 vieneu>=1.1.0
 
 # ─── Avatar models (MuseTalk + Wav2Lip + Ultralight) ─────────────────
+# transformers 4.46.2 pin: vieneu compat (needs Qwen3 arch trong transformers
+# 4.46+ nhưng <5.0). diffusers ≥0.32 cần Dinov2WithRegistersConfig trong
+# transformers ≥4.49 — pin diffusers <0.32 cho khớp với transformers 4.46.2.
 transformers==4.46.2
-diffusers
+diffusers>=0.27,<0.32
 accelerate
 omegaconf
 einops
