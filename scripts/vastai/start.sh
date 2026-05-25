@@ -239,6 +239,12 @@ export LLM_API_KEY="${LLM_API_KEY}"
 [[ -n "${BATCH_SIZE:-}" ]]              && ARGS+=(--batch_size "${BATCH_SIZE}")
 [[ -n "${VIENEU_HTTP_PREBUFFER:-}" ]]   && ARGS+=(--vieneu_http_prebuffer "${VIENEU_HTTP_PREBUFFER}")
 [[ -n "${TTS_SPEED:-}" ]]               && ARGS+=(--tts_speed "${TTS_SPEED}")
+# Brain pacing knobs (giảm premature fire khi brain continuous_talk)
+[[ -n "${TARGET_BUFFER_SECS:-}" ]]      && ARGS+=(--target_buffer_secs "${TARGET_BUFFER_SECS}")
+[[ -n "${TTS_CHARS_PER_SEC:-}" ]]       && ARGS+=(--tts_chars_per_sec "${TTS_CHARS_PER_SEC}")
+[[ -n "${IDLE_POLL_SECS:-}" ]]          && ARGS+=(--idle_poll_secs "${IDLE_POLL_SECS}")
+[[ -n "${SILENCE_GAP_SECS:-}" ]]        && ARGS+=(--silence_gap_secs "${SILENCE_GAP_SECS}")
+[[ -n "${CONTINUOUS_TALK:-}" ]]         && ARGS+=(--continuous_talk "${CONTINUOUS_TALK}")
 
 echo "[start] === Step 3/3: app.py (venv_talking) ==="
 echo "[start] open: http://\$PUBLIC_IPADDR:${LISTEN_PORT}/"
