@@ -2,32 +2,56 @@
 ###############################################################################
 #  setup_musetalk_avatar.sh — production-grade MuseTalk avatar preprocessing.
 #
-#  Wraps avatars/musetalk/genavatar.py (gốc MuseTalk repo) — dùng dwpose
-#  landmark + face_parsing (bisent bypass elliptical mask) — chất lượng cao
-#  nhất so với 2 path bypass cũ (mediapipe / S3FD-only).
+#  Wraps avatars/musetalk/genavatar.py (gốc MuseTalk) — DWPose landmark +
+#  8-channel VAE latents + elliptical jaw-cheek mask (bisent bypass).
+#
+#  ┌──────────────────────────────────────────────────────────────────────┐
+#  │  WHY a separate venv_avatar?                                          │
+#  │                                                                       │
+#  │  Vast.AI Ubuntu 24.04 base image = Python 3.12 + CUDA 12.x. MuseTalk  │
+#  │  upstream stack (mmcv 2.0.1 / mmdet 3.1.0 / mmpose 1.1.0) only has    │
+#  │  pre-built wheels for:                                                │
+#  │      Python 3.10 + torch 2.0.1 + cu118                                │
+#  │                                                                       │
+#  │  Trying to install on py3.12 → mmcv source build needs CUDA compile  │
+#  │  (264 .cpp/.cu files, ~30 min on contended box, often fails).        │
+#  │  Trying py3.10 + torch 2.4 cu121 → openmmlab CDN has no cp310/cu121  │
+#  │  wheel for mmcv 2.0.x → falls back to source = same issue.           │
+#  │                                                                       │
+#  │  Solution: uv-installed standalone Python 3.10 (no root, no apt) +   │
+#  │  torch 2.0.1+cu118 + pre-built mmcv 2.0.1 cu118 cp310 wheel from     │
+#  │  openmmlab CDN. Runtime is fine because driver 570+ supports CUDA    │
+#  │  11.8 forward (back-compat).                                          │
+#  └──────────────────────────────────────────────────────────────────────┘
 #
 #  Outputs (data/avatars/$AVATAR_ID/):
-#    full_imgs/{:08d}.png        — raw frames (chèn watermark "LiveTalking")
-#    coords.pkl                  — dwpose-refined face bbox per frame
+#    full_imgs/{:08d}.png        — raw frames (LiveTalking watermark)
+#    coords.pkl                  — DWPose-refined face bbox per frame
 #    latents.pt                  — 8-channel VAE latents (masked+ref concat)
 #    mask/{:08d}.png             — elliptical jaw-cheek mask
-#    mask_coords.pkl             — crop_box cho blending mượt
-#    avator_info.json            — model=musetalk, fps, frames, bbox_shift
+#    mask_coords.pkl             — crop_box cho blending
+#    avator_info.json            — model=musetalk, fps=25, frames=N
 #
-#  Idempotent: skip re-install mmpose nếu đã có; skip re-download dwpose ckpt;
-#  KHÔNG skip preprocess (re-run sẽ overwrite avatar dir).
+#  Idempotent:
+#    - venv_avatar tồn tại → skip uv + venv creation
+#    - mm* stack đã có → skip pip install
+#    - s3fd ckpt đã cache → skip wget
+#    - genavatar overwrite avatar dir (re-run = fresh preprocess)
 #
 #  Usage:
 #    bash scripts/vastai/setup_musetalk_avatar.sh [VIDEO] [AVATAR_ID]
-#    # mặc định: data/uploads/mau.mp4  → mau
+#    # default: data/uploads/mau.mp4 → avatar_id "mau"
 #
 #  Env knobs (genavatar.py args):
-#    VERSION=v15            v1 | v15            (v15 thêm extra_margin jaw)
+#    VERSION=v15            v1 | v15  (v15 thêm extra_margin cằm)
 #    BBOX_SHIFT=0           shift y của half-face landmark (- lên, + xuống)
-#    EXTRA_MARGIN=10        v15 thêm y2 margin cho cằm
-#    PARSING_MODE=jaw       raw | jaw            (mask geometry mode)
-#    LEFT_CHEEK_WIDTH=90    elliptical mask width
+#    EXTRA_MARGIN=10        v15: thêm px y2 cho cằm
+#    PARSING_MODE=jaw       raw | jaw (mask geometry mode)
+#    LEFT_CHEEK_WIDTH=90    width vùng má elliptical mask
 #    RIGHT_CHEEK_WIDTH=90
+#
+#  Disk: +6 GB cho venv_avatar (torch 2.0 cu118 + mm* stack)
+#  Time: 5-7 phút lần đầu (chủ yếu là pip download), ~30s lần sau.
 ###############################################################################
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -42,51 +66,79 @@ PARSING_MODE="${PARSING_MODE:-jaw}"
 LEFT_CHEEK="${LEFT_CHEEK_WIDTH:-90}"
 RIGHT_CHEEK="${RIGHT_CHEEK_WIDTH:-90}"
 
-# ─── 1. Resolve venv_talking Python ────────────────────────────────────────
-if [[ -L venv_talking ]]; then
-  TARGET=$(readlink -f venv_talking)
-  PY="$TARGET/bin/python"
+VENV_AVATAR="${REPO_ROOT}/venv_avatar"
+PY_AVATAR="${VENV_AVATAR}/bin/python"
+
+# ─── 1. uv-install Python 3.10 (standalone, no root) ──────────────────────
+# Lý do: Vast.AI ubuntu 24.04 base = py3.12. MuseTalk official wheels chỉ có
+# cho py3.10. Apt install python3.10 cần ppa:deadsnakes + root + apt update
+# → classifier blocks trên shared host. uv tải standalone build từ
+# indygreg/python-build-standalone vào ~/.uv/python/, hoàn toàn userspace.
+PY310=""
+if [[ -x "$PY_AVATAR" ]]; then
+  echo "[avatar] venv_avatar đã tồn tại — skip Python 3.10 install"
 else
-  PY="${REPO_ROOT}/venv_talking/bin/python"
+  # Cài uv vào venv_talking (sẵn có sau setup.sh)
+  if [[ ! -x "${REPO_ROOT}/venv_talking/bin/uv" ]]; then
+    echo "[avatar] Installing uv vào venv_talking..."
+    "${REPO_ROOT}/venv_talking/bin/pip" install --no-cache-dir -q uv
+  fi
+  echo "[avatar] Installing Python 3.10 qua uv (~30s, ~30MB)..."
+  "${REPO_ROOT}/venv_talking/bin/uv" python install 3.10
+  PY310=$("${REPO_ROOT}/venv_talking/bin/uv" python find 3.10)
+  echo "[avatar] Python 3.10: $PY310"
 fi
-if [[ ! -x "$PY" ]]; then
-  echo "[ERR] venv_talking chưa có. Chạy: bash scripts/vastai/setup.sh trước." >&2
-  exit 1
+
+# ─── 2. Tạo venv_avatar ───────────────────────────────────────────────────
+if [[ ! -x "$PY_AVATAR" ]]; then
+  echo "[avatar] Tạo venv_avatar tại $VENV_AVATAR..."
+  "$PY310" -m venv "$VENV_AVATAR"
+  "$PY_AVATAR" -m pip install --no-cache-dir -U pip
+  # setuptools 75-79: có pkg_resources, không ref ImpImporter (py3.10 không
+  # cần fix này nhưng giữ cho consistent với py3.12 path).
+  "$PY_AVATAR" -m pip install --no-cache-dir -U 'setuptools>=75,<80' wheel
 fi
-echo "[avatar] Python: $PY ($("$PY" --version 2>&1))"
+echo "[avatar] Python: $PY_AVATAR ($("$PY_AVATAR" --version 2>&1))"
 
-# ─── 2. Install mmpose stack (idempotent) ─────────────────────────────────
-# Skip openmim/mim CLI — openxlab dep pin setuptools~=60.2.0 + rich~=13.4.2
-# gây py3.12 incompat (pkgutil.ImpImporter removed trong py3.12, pkg_resources
-# crash khi import). Thay vì fight với openxlab, dùng openmmlab CDN pre-built
-# wheels trực tiếp qua pip — match torch ABI bằng URL pattern.
-if ! "$PY" -c "import mmpose, mmcv, mmengine, mmdet" 2>/dev/null; then
-  # Detect torch version + cuda tag để pick đúng wheel
-  TORCH_MAJORMIN=$("$PY" -c "import torch; v=torch.__version__.split('+')[0].rsplit('.',1)[0]; print(v)" 2>/dev/null)
-  TORCH_CUDA_TAG=$("$PY" -c "import torch; print('cu'+torch.version.cuda.replace('.',''))" 2>/dev/null)
-  MMCV_WHEEL_URL="https://download.openmmlab.com/mmcv/dist/${TORCH_CUDA_TAG}/torch${TORCH_MAJORMIN}/index.html"
-  echo "[avatar] torch=${TORCH_MAJORMIN}+${TORCH_CUDA_TAG}, mmcv wheel index:"
-  echo "         ${MMCV_WHEEL_URL}"
+# ─── 3. Install torch 2.0.1 cu118 + MuseTalk official mm* stack ───────────
+if ! "$PY_AVATAR" -c "import mmpose, mmcv, mmengine, mmdet" 2>/dev/null; then
+  echo "[avatar] === MuseTalk official stack (torch 2.0.1 cu118 + mm*) ==="
+  echo "[avatar]   Combo này khớp pre-built wheels openmmlab CDN."
 
-  # mmcv CHỈ install qua wheel index (built CUDA ops, không build from source
-  # → tránh py3.12 + pkg_resources fail trong build isolation).
-  "$PY" -m pip install --no-cache-dir 'mmcv>=2.0.1,<2.3' -f "${MMCV_WHEEL_URL}" \
-    || { echo "[ERR] mmcv wheel không có cho torch${TORCH_MAJORMIN}/${TORCH_CUDA_TAG}"; \
-         echo "      check: ${MMCV_WHEEL_URL}"; exit 1; }
+  # Torch 2.0.1 cu118 — MuseTalk README spec. Driver >=525 (CUDA 11.8+ support)
+  # đủ runtime. Vast.AI 3090 driver 570 OK ngược về cu11.
+  echo "[avatar] torch 2.0.1+cu118 + torchvision 0.15.2..."
+  "$PY_AVATAR" -m pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cu118 \
+    torch==2.0.1 torchvision==0.15.2
 
-  # mmengine + mmdet + mmpose pure Python — pip install thẳng.
-  "$PY" -m pip install --no-cache-dir \
-    "mmengine>=0.10,<1.0" \
-    "mmdet>=3.1.0,<3.4" \
-    "mmpose>=1.1.0,<1.4"
+  # mmcv 2.0.1 cu118 cp310 wheel — KHÔNG build source, KHÔNG CUDA compile.
+  echo "[avatar] mmcv 2.0.1 cu118 cp310 (pre-built wheel)..."
+  "$PY_AVATAR" -m pip install --no-cache-dir \
+    mmcv==2.0.1 -f https://download.openmmlab.com/mmcv/dist/cu118/torch2.0/index.html
+
+  # mmengine + mmdet 3.1.0 + mmpose 1.1.0 = MuseTalk official combo.
+  echo "[avatar] mmengine + mmdet 3.1.0 + mmpose 1.1.0..."
+  "$PY_AVATAR" -m pip install --no-cache-dir \
+    mmengine 'mmdet==3.1.0' 'mmpose==1.1.0'
+
+  # numpy<2 — mmcv 2.0.1 wheel pull numpy 2.x nhưng:
+  #   1. torch 2.0.1 built cho numpy 1.x ABI → warning "_ARRAY_API not found"
+  #   2. xtcocotools (dep mmpose) compile against numpy 1.x → ValueError
+  #      "numpy.dtype size changed: 96 vs 88 bytes"
+  echo "[avatar] pin numpy<2 (xtcocotools ABI compat)..."
+  "$PY_AVATAR" -m pip install --no-cache-dir 'numpy<2'
+
+  # diffusers/transformers/opencv cho VAE + UNet load trong genavatar.
+  echo "[avatar] diffusers + transformers + opencv + tqdm..."
+  "$PY_AVATAR" -m pip install --no-cache-dir \
+    'diffusers>=0.27,<0.32' 'transformers==4.46.2' accelerate omegaconf einops \
+    opencv-python-headless tqdm
 else
-  echo "[avatar] mmpose stack đã có (skip install)"
+  echo "[avatar] mm* stack đã có (skip install)"
 fi
-# face_alignment (preprocessing.py: from face_detection import FaceAlignment)
-# — local bundle ở avatars/musetalk/utils/face_detection, không cần pip extra,
-# nhưng s3fd weights load qua torch.utils.model_zoo.load_url (auto cache).
 
-# ─── 3. Verify required model files ───────────────────────────────────────
+# ─── 4. Verify required model files ───────────────────────────────────────
 NEED_DL=0
 [[ ! -f models/dwpose/dw-ll_ucoco_384.pth ]] && NEED_DL=1
 [[ ! -f models/musetalkV15/unet.pth      ]] && NEED_DL=1
@@ -103,25 +155,39 @@ for f in \
   models/sd-vae/config.json
 do
   if [[ ! -e "$f" ]]; then
-    echo "[ERR] vẫn thiếu $f sau download_models.sh — check log HF/network." >&2
+    echo "[ERR] vẫn thiếu $f sau download_models.sh." >&2
     exit 1
   fi
 done
 
-# ─── 4. Video precondition ────────────────────────────────────────────────
+# ─── 5. Pre-fetch s3fd ckpt từ HF CDN (nhanh hơn 200x adrianbulat.com) ───
+# face_detection auto-download s3fd-619a316812.pth (85 MB) từ adrianbulat.com
+# (UK, ~500 KB/s từ VN/US). Pre-fetch từ HF camenduru/facexlib mirror
+# (Fastly CDN, ~100 MB/s) tiết kiệm 3-5 phút mỗi lần preprocess.
+TORCH_CACHE="${HOME}/.cache/torch/hub/checkpoints"
+S3FD_CKPT="${TORCH_CACHE}/s3fd-619a316812.pth"
+if [[ ! -f "$S3FD_CKPT" ]]; then
+  mkdir -p "$TORCH_CACHE"
+  echo "[avatar] Pre-fetch s3fd ckpt từ HF CDN (89 MB)..."
+  wget -q --show-progress -O "$S3FD_CKPT" \
+    "https://huggingface.co/camenduru/facexlib/resolve/main/s3fd-619a316812.pth" \
+    || { rm -f "$S3FD_CKPT"; echo "[WARN] HF mirror fail — sẽ fallback adrianbulat.com (chậm)"; }
+fi
+
+# ─── 6. Video precondition ────────────────────────────────────────────────
 if [[ ! -f "$VIDEO" ]]; then
   echo "[ERR] video không tồn tại: $VIDEO" >&2
-  echo "      scp từ local: scp -P <PORT> data/uploads/mau.mp4 root@<HOST>:/workspace/LiveTalking/data/uploads/" >&2
+  echo "      scp từ local: scp -P <PORT> data/uploads/mau.mp4 root@<HOST>:$REPO_ROOT/data/uploads/" >&2
   exit 1
 fi
 
-# ─── 5. Run genavatar.py ──────────────────────────────────────────────────
+# ─── 7. Run genavatar.py với venv_avatar ──────────────────────────────────
 # preprocessing.py dùng `from face_detection import FaceAlignment, LandmarksType`
-# — không có dotted path. Đẩy avatars/musetalk/utils vào PYTHONPATH để resolve
-# face_detection sub-package thành top-level.
+# — không có dotted path. Đẩy avatars/musetalk/utils vào PYTHONPATH để
+# resolve face_detection sub-package thành top-level.
 echo "[avatar] === genavatar.py === id=$AVATAR_ID  video=$VIDEO  version=$VERSION"
 PYTHONPATH="${REPO_ROOT}/avatars/musetalk/utils:${PYTHONPATH:-}" \
-  "$PY" -m avatars.musetalk.genavatar \
+  "$PY_AVATAR" -m avatars.musetalk.genavatar \
     --file "$VIDEO" \
     --avatar_id "$AVATAR_ID" \
     --version "$VERSION" \
@@ -131,11 +197,11 @@ PYTHONPATH="${REPO_ROOT}/avatars/musetalk/utils:${PYTHONPATH:-}" \
     --left_cheek_width "$LEFT_CHEEK" \
     --right_cheek_width "$RIGHT_CHEEK"
 
-# ─── 6. Patch avator_info.json ────────────────────────────────────────────
-# genavatar.py chỉ ghi {avatar_id, video_path, bbox_shift}. Runtime
-# (musetalk_avatar.py load_avatar) không yêu cầu nhưng start.sh + admin web
-# đọc {model, fps, frames} để render UI / chọn pipeline.
-"$PY" - "$AVATAR_ID" <<'PY'
+# ─── 8. Patch avator_info.json ────────────────────────────────────────────
+# genavatar.py ghi {avatar_id, video_path, bbox_shift}. Runtime
+# (musetalk_avatar.py load_avatar) + admin web cần {model, fps, frames}
+# để render UI / chọn pipeline.
+"$PY_AVATAR" - "$AVATAR_ID" <<'PY'
 import glob, json, os, sys
 avatar_id = sys.argv[1]
 info_path = f"data/avatars/{avatar_id}/avator_info.json"
@@ -152,7 +218,7 @@ with open(info_path, "w", encoding="utf-8") as f:
 print(f"[avatar] avator_info: {info}")
 PY
 
-# ─── 7. Sanity check output ────────────────────────────────────────────────
+# ─── 9. Sanity check output ───────────────────────────────────────────────
 AVATAR_DIR="data/avatars/$AVATAR_ID"
 for f in \
   "$AVATAR_DIR/full_imgs" \
