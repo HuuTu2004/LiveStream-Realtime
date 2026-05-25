@@ -25,7 +25,11 @@ vieneu[gpu]
 aiohttp>=3.9
 numpy>=2.0
 soundfile>=0.12
-onnxruntime>=1.20
+# onnxruntime-gpu = CUDA codec decode → audio gen 1.78x realtime (vs CPU 1.0x).
+# Đánh đổi: thêm GPU compute (codec dùng SM) → musetalk fps drop nhẹ trên
+# 3090 đã sát limit. Nhưng audio responsive hơn → livestream UX tốt hơn cho
+# user đeo headphone. Default GPU; chỉ revert CPU nếu GPU VRAM cực thiếu.
+onnxruntime-gpu>=1.20
 
 # ── transformers compat ────────────────────────────────────────────────
 # transformers 5.x require torch>=2.11 (cpp extensions). Pin <5.0 cho
