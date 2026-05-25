@@ -168,25 +168,32 @@ def main():
         start = time.perf_counter()
         chunks_sent = 0
         first_sent_at = None
+        import aiohttp, asyncio
         try:
-            for sent_idx, sentence in enumerate(sentences):
-                sent_kwargs = dict(infer_kwargs)
-                sent_kwargs["text"] = sentence
-                t_sent = time.perf_counter()
-                audio = tts.infer(**sent_kwargs)
-                arr = np.asarray(audio, dtype=np.float32).reshape(-1)
-                gen_time = time.perf_counter() - t_sent
-                if first_sent_at is None:
-                    first_sent_at = time.perf_counter() - start
-                    log(f"first sentence gen @{first_sent_at:.2f}s ({len(arr)/24000:.2f}s audio) text={sentence[:30]!r}")
-                # Chunk 200ms slices cho HTTP streaming response
-                CHUNK_SAMPLES = 24000 // 5  # 200ms @ 24kHz
-                for i in range(0, len(arr), CHUNK_SAMPLES):
-                    slice_ = arr[i:i+CHUNK_SAMPLES]
-                    payload = slice_.tobytes()
-                    await resp.write(struct.pack(">I", len(payload)))
-                    await resp.write(payload)
-                    chunks_sent += 1
+            async with aiohttp.ClientSession() as session:
+                # Fire tất cả sentences SONG SONG → lmdeploy batch nhiều requests
+                # cùng lúc (1.7x throughput). await theo thứ tự để stream đúng order.
+                pending = []
+                for sentence in sentences:
+                    sent_kwargs = dict(infer_kwargs)
+                    sent_kwargs["text"] = sentence
+                    pending.append(asyncio.create_task(
+                        tts.infer_async(session=session, **sent_kwargs)
+                    ))
+                for sent_idx, fut in enumerate(pending):
+                    audio = await fut
+                    arr = np.asarray(audio, dtype=np.float32).reshape(-1)
+                    if first_sent_at is None:
+                        first_sent_at = time.perf_counter() - start
+                        log(f"first sentence gen @{first_sent_at:.2f}s ({len(arr)/24000:.2f}s audio) text={sentences[sent_idx][:30]!r}")
+                    # Chunk 200ms slices cho HTTP streaming response
+                    CHUNK_SAMPLES = 24000 // 5  # 200ms @ 24kHz
+                    for i in range(0, len(arr), CHUNK_SAMPLES):
+                        slice_ = arr[i:i+CHUNK_SAMPLES]
+                        payload = slice_.tobytes()
+                        await resp.write(struct.pack(">I", len(payload)))
+                        await resp.write(payload)
+                        chunks_sent += 1
         except Exception as e:
             log(f"infer error: {e}\n{traceback.format_exc()}")
         try:
