@@ -122,7 +122,57 @@ Flags hữu ích:
 | `-SkipSetup`   | Chỉ muốn re-sync code (đã cài deps trước)      |
 | `-AvatarId X`  | Upload avatar dir khác (default `wav2lip256_avatar1`) |
 
-## 4. Start server
+## 4. (Optional) Tạo MuseTalk avatar chất lượng cao
+
+Nếu muốn dùng `AVATAR_MODEL=musetalk` (chất lượng lipsync tốt nhất, **chậm hơn wav2lip ~30%** nhưng môi sắc nét + blend mượt), preprocess video raw qua wrapper sau:
+
+```bash
+ssh -i ~/.ssh/vast_key -p 56020 root@171.226.34.64
+cd /workspace/LiveTalking
+
+# scp video lên trước (1 lần):
+# scp -P 56020 data/uploads/mau.mp4 root@HOST:/workspace/LiveTalking/data/uploads/
+
+bash scripts/vastai/setup_musetalk_avatar.sh data/uploads/mau.mp4 mau
+```
+
+Script tự làm:
+
+1. **Install mmpose stack** vào `venv_talking` qua openmim (idempotent) — `mmengine + mmcv + mmdet + mmpose` theo torch ABI 2.4 cu121.
+2. **Download checkpoints** còn thiếu qua `download_models.sh`:
+   - `models/dwpose/dw-ll_ucoco_384.pth` (~150MB, từ `TMElyralab/MuseTalk`)
+   - `models/musetalkV15/{unet.pth, musetalk.json}`
+   - `models/sd-vae/` (VAE encoder cho latents)
+3. **Run `avatars/musetalk/genavatar.py`** — gốc MuseTalk pipeline:
+   - DWPose landmark detection → refined face bbox (chính xác hơn S3FD/mediapipe ở vùng mép môi)
+   - VAE encode 8-channel latents (masked + ref concat) cho UNet input
+   - Geometric elliptical mask (bisent bypass) — mask vùng MIỆNG+CẰM, exclude cổ → không shake ở seam
+4. **Patch `avator_info.json`** thêm `model="musetalk"` cho runtime nhận đúng pipeline.
+
+Output dir `data/avatars/$AVATAR_ID/`:
+
+```
+full_imgs/{:08d}.png         raw frames + watermark "LiveTalking"
+coords.pkl                   dwpose-refined bbox per frame
+latents.pt                   8-channel VAE latents (masked+ref)
+mask/{:08d}.png              elliptical jaw-cheek mask
+mask_coords.pkl              crop_box cho image_prepare_material
+avator_info.json             {"model": "musetalk", "fps": 25, "frames": N}
+```
+
+Env knobs (xem comment đầu script):
+
+| Var | Default | Ý nghĩa |
+|---|---|---|
+| `VERSION` | `v15` | `v15` thêm `extra_margin` ở y2 cho cằm; `v1` cổ điển |
+| `BBOX_SHIFT` | `0` | Shift y của half-face landmark (+ xuống, - lên) |
+| `EXTRA_MARGIN` | `10` | v15: thêm px ở y2 cho cằm khỏi bị cắt |
+| `PARSING_MODE` | `jaw` | `jaw` / `raw` — mode mask geometry |
+| `LEFT_CHEEK_WIDTH` / `RIGHT_CHEEK_WIDTH` | `90` | Width vùng má elliptical mask |
+
+**Thời gian preprocess (RTX 3090)**: ~0.4s/frame → 1 phút video 25fps = ~10 phút. Chạy 1 lần per avatar, sau đó runtime dùng cached output không cần mmpose nữa.
+
+## 5. Start server
 
 ```bash
 ssh -i ~/.ssh/vast_key -p 56020 root@171.226.34.64
@@ -156,7 +206,7 @@ bash scripts/vastai/start.sh
 | `OPENAI_API_KEY`   | —                        | LLM key cho brain                                |
 | `HF_TOKEN`         | —                        | Tăng rate limit khi pull VieNeu model HF         |
 
-## 5. Test trong browser
+## 6. Test trong browser
 
 ### Option A — SSH tunnel (KHÔNG cần map port Vast UI) ⭐ Recommended
 

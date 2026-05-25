@@ -63,6 +63,13 @@ fi
 if [[ -d "${MODELS_DIR}/_musetalk_raw/musetalk" ]] && [[ ! -e "${MODELS_DIR}/musetalk" ]]; then
   ln -sfn "${MODELS_DIR}/_musetalk_raw/musetalk" "${MODELS_DIR}/musetalk"
 fi
+# DWPose checkpoint cho avatar preprocessing (genavatar.py + mmpose).
+# Subdir 'dwpose' chứa dw-ll_ucoco_384.pth + config. Runtime KHÔNG cần
+# (chỉ preprocessing time), nhưng symlink để setup_musetalk_avatar.sh tìm thấy.
+if [[ -d "${MODELS_DIR}/_musetalk_raw/dwpose" ]] && [[ ! -e "${MODELS_DIR}/dwpose" ]]; then
+  ln -sfn "${MODELS_DIR}/_musetalk_raw/dwpose" "${MODELS_DIR}/dwpose"
+  echo "[link] models/dwpose → _musetalk_raw/dwpose"
+fi
 
 # ─── sd-vae-ft-mse → models/sd-vae (code path) ────────────────────────
 hf_snapshot "stabilityai/sd-vae-ft-mse" "${MODELS_DIR}/sd-vae" || true
