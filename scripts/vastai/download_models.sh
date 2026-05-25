@@ -64,11 +64,17 @@ if [[ -d "${MODELS_DIR}/_musetalk_raw/musetalk" ]] && [[ ! -e "${MODELS_DIR}/mus
   ln -sfn "${MODELS_DIR}/_musetalk_raw/musetalk" "${MODELS_DIR}/musetalk"
 fi
 # DWPose checkpoint cho avatar preprocessing (genavatar.py + mmpose).
-# Subdir 'dwpose' chứa dw-ll_ucoco_384.pth + config. Runtime KHÔNG cần
-# (chỉ preprocessing time), nhưng symlink để setup_musetalk_avatar.sh tìm thấy.
-if [[ -d "${MODELS_DIR}/_musetalk_raw/dwpose" ]] && [[ ! -e "${MODELS_DIR}/dwpose" ]]; then
-  ln -sfn "${MODELS_DIR}/_musetalk_raw/dwpose" "${MODELS_DIR}/dwpose"
-  echo "[link] models/dwpose → _musetalk_raw/dwpose"
+# Runtime KHÔNG cần (chỉ preprocessing time), nhưng setup_musetalk_avatar.sh
+# yêu cầu. TMElyralab/MuseTalk repo (cũ) có subdir dwpose/ nhưng repo hiện
+# tại chỉ còn musetalk + musetalkV15 → pull thẳng từ yzd-v/DWPose (nguồn
+# canonical của upstream MuseTalk download script).
+DWPOSE_CKPT="${MODELS_DIR}/dwpose/dw-ll_ucoco_384.pth"
+if [[ ! -f "${DWPOSE_CKPT}" ]]; then
+  mkdir -p "${MODELS_DIR}/dwpose"
+  echo "[get ] dw-ll_ucoco_384.pth (388MB từ yzd-v/DWPose)"
+  wget -q --show-progress -O "${DWPOSE_CKPT}" \
+    "https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.pth" \
+    || { rm -f "${DWPOSE_CKPT}"; echo "[WARN] dwpose ckpt fail — setup_musetalk_avatar.sh sẽ retry"; }
 fi
 
 # ─── sd-vae-ft-mse → models/sd-vae (code path) ────────────────────────
