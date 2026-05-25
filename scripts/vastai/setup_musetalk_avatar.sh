@@ -56,15 +56,29 @@ fi
 echo "[avatar] Python: $PY ($("$PY" --version 2>&1))"
 
 # ─── 2. Install mmpose stack (idempotent) ─────────────────────────────────
-# openmim resolves ABI: mmcv <-> torch version mismatch là nguyên nhân crash
-# phổ biến nhất, để mim tự match.
+# Skip openmim/mim CLI — openxlab dep pin setuptools~=60.2.0 + rich~=13.4.2
+# gây py3.12 incompat (pkgutil.ImpImporter removed trong py3.12, pkg_resources
+# crash khi import). Thay vì fight với openxlab, dùng openmmlab CDN pre-built
+# wheels trực tiếp qua pip — match torch ABI bằng URL pattern.
 if ! "$PY" -c "import mmpose, mmcv, mmengine, mmdet" 2>/dev/null; then
-  echo "[avatar] Installing mmpose stack qua openmim (torch ABI match)..."
-  "$PY" -m pip install --no-cache-dir -q -U openmim
-  "$PY" -m mim install -q "mmengine>=0.10,<1.0"
-  "$PY" -m mim install -q "mmcv>=2.0.1,<2.2"
-  "$PY" -m mim install -q "mmdet>=3.1.0,<3.4"
-  "$PY" -m mim install -q "mmpose>=1.1.0,<1.4"
+  # Detect torch version + cuda tag để pick đúng wheel
+  TORCH_MAJORMIN=$("$PY" -c "import torch; v=torch.__version__.split('+')[0].rsplit('.',1)[0]; print(v)" 2>/dev/null)
+  TORCH_CUDA_TAG=$("$PY" -c "import torch; print('cu'+torch.version.cuda.replace('.',''))" 2>/dev/null)
+  MMCV_WHEEL_URL="https://download.openmmlab.com/mmcv/dist/${TORCH_CUDA_TAG}/torch${TORCH_MAJORMIN}/index.html"
+  echo "[avatar] torch=${TORCH_MAJORMIN}+${TORCH_CUDA_TAG}, mmcv wheel index:"
+  echo "         ${MMCV_WHEEL_URL}"
+
+  # mmcv CHỈ install qua wheel index (built CUDA ops, không build from source
+  # → tránh py3.12 + pkg_resources fail trong build isolation).
+  "$PY" -m pip install --no-cache-dir 'mmcv>=2.0.1,<2.3' -f "${MMCV_WHEEL_URL}" \
+    || { echo "[ERR] mmcv wheel không có cho torch${TORCH_MAJORMIN}/${TORCH_CUDA_TAG}"; \
+         echo "      check: ${MMCV_WHEEL_URL}"; exit 1; }
+
+  # mmengine + mmdet + mmpose pure Python — pip install thẳng.
+  "$PY" -m pip install --no-cache-dir \
+    "mmengine>=0.10,<1.0" \
+    "mmdet>=3.1.0,<3.4" \
+    "mmpose>=1.1.0,<1.4"
 else
   echo "[avatar] mmpose stack đã có (skip install)"
 fi
