@@ -39,7 +39,13 @@ from aiohttp import web
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Vieneu TTS HTTP server (remote mode)")
+    p = argparse.ArgumentParser(description="Vieneu TTS HTTP server")
+    p.add_argument("--mode", default=os.environ.get("VIENEU_MODE", "remote"),
+                   choices=["remote", "standard", "turbo", "turbo_gpu"],
+                   help="remote=lmdeploy bf16 (heavy, max quality), "
+                        "standard=GGUF Q4 GPU (llama-cpp, light), "
+                        "turbo=Turbo 0.1B GGUF CPU (Edge), "
+                        "turbo_gpu=Turbo 0.1B BF16 transformers GPU ⭐ FASTEST realtime")
     p.add_argument("--emotion", default=os.environ.get("VIENEU_EMOTION", "natural"),
                    choices=["natural", "storytelling"])
     p.add_argument("--port", type=int, default=int(os.environ.get("VIENEU_HTTP_PORT", "23334")),
@@ -47,9 +53,12 @@ def parse_args():
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--model", default=os.environ.get("VIENEU_MODEL", "pnnbao-ump/VieNeu-TTS-v2"))
     p.add_argument("--lmdeploy_url", default=os.environ.get("LMDEPLOY_URL", "http://127.0.0.1:23333/v1"),
-                   help="OpenAI-compatible api_base của lmdeploy backbone server")
+                   help="(mode=remote only) OpenAI-compat api_base của lmdeploy backbone")
     p.add_argument("--codec_repo", default=os.environ.get("VIENEU_CODEC_REPO", "neuphonic/neucodec-onnx-decoder-int8"),
-                   help="HF repo neucodec. ONNX int8 = 5x faster + sạch hơn PyTorch trên VieNeu-TTS-v2 + lmdeploy.")
+                   help="HF repo neucodec. ONNX int8 = 5x faster + sạch hơn PyTorch.")
+    p.add_argument("--gguf_filename", default=os.environ.get("VIENEU_GGUF_FILENAME", "*.gguf"),
+                   help="(mode=standard/turbo) glob của GGUF file trong HF repo. "
+                        "Default '*.gguf' = Q4_K_M variant in pnnbao-ump/VieNeu-TTS-v2.")
     return p.parse_args()
 
 
@@ -59,18 +68,56 @@ def log(msg):
 
 def main():
     args = parse_args()
-    log(f"Loading Vieneu remote backbone={args.lmdeploy_url} model={args.model} codec={args.codec_repo}")
 
-    # Lazy import vieneu — chỉ ở venv này (torch 2.6, không leak)
+    # Lazy import vieneu — chỉ ở venv này (torch 2.6+, không leak khỏi venv_vieneu)
     from vieneu import Vieneu
 
-    tts = Vieneu(
-        mode="remote",
-        api_base=args.lmdeploy_url,
-        model_name=args.model,
-        emotion=args.emotion,
-        codec_repo=args.codec_repo,
-    )
+    # ─── Mode dispatch ────────────────────────────────────────────────────
+    if args.mode == "remote":
+        # lmdeploy bf16 backbone — max quality, NHƯNG share GPU compute với
+        # musetalk → contention. Dùng khi GPU có headroom hoặc multi-GPU.
+        log(f"Loading Vieneu mode=remote backbone={args.lmdeploy_url} model={args.model} codec={args.codec_repo}")
+        tts = Vieneu(
+            mode="remote",
+            api_base=args.lmdeploy_url,
+            model_name=args.model,
+            emotion=args.emotion,
+            codec_repo=args.codec_repo,
+        )
+    elif args.mode == "standard":
+        # GGUF Q4 backbone qua llama-cpp-python với CUDA offload.
+        # Compute ~25% của bf16 → ít contention với musetalk → giữ 3.8-5x realtime
+        # ngay cả khi share GPU. Quality drop ~5% so bf16.
+        # YÊU CẦU venv_vieneu có llama-cpp-python CUDA build:
+        #   pip install llama-cpp-python --extra-index-url \
+        #     https://abetlen.github.io/llama-cpp-python/whl/cu121
+        log(f"Loading Vieneu mode=standard (GGUF GPU) model={args.model} codec={args.codec_repo}")
+        kwargs = {
+            "backbone_device": "cuda",
+            "codec_device": "cuda",
+            "gguf_filename": args.gguf_filename,
+            "emotion": args.emotion,
+        }
+        # codec_repo: nếu user override (vd ONNX) dùng cái đó, default vieneu standard
+        # mode tự pick PyTorch neucodec. ONNX int8 sạch hơn cho streaming.
+        if args.codec_repo:
+            kwargs["codec_repo"] = args.codec_repo
+        tts = Vieneu(**kwargs)
+    elif args.mode == "turbo":
+        # VieNeu-TTS-v2-Turbo 0.1B GGUF — CPU/Edge variant, dùng llama-cpp-python.
+        # Trên 3090 share GPU musetalk → bottleneck llama-cpp (no FlashAttention)
+        # → ~1.0x realtime (chỉ đáng dùng nếu KHÔNG có GPU).
+        log(f"Loading Vieneu mode=turbo (0.1B GGUF CPU/Edge) emotion={args.emotion}")
+        tts = Vieneu(mode="turbo", emotion=args.emotion)
+    elif args.mode == "turbo_gpu":
+        # ⭐ FASTEST cho realtime với GPU: Turbo 0.1B BF16 transformers GPU.
+        # Per HF model card: "GPU-optimized: Ultra-low latency inference on
+        # transformers backend". Native PyTorch + transformers → FlashAttention
+        # tự động qua torch.compile, KHÔNG bị llama-cpp-python bottleneck.
+        log(f"Loading Vieneu mode=turbo_gpu (0.1B BF16 transformers GPU) emotion={args.emotion}")
+        tts = Vieneu(mode="turbo_gpu", device="cuda", emotion=args.emotion)
+    else:
+        raise ValueError(f"Unsupported mode: {args.mode}")
     voices = tts.list_preset_voices()
     log(f"Ready. {len(voices)} preset voices, sample: {[v[0] for v in voices[:5]]}")
 
@@ -93,7 +140,8 @@ def main():
     async def health(_request):
         return web.json_response({
             "status": "ok",
-            "backbone": args.lmdeploy_url,
+            "mode": args.mode,
+            "backbone": args.lmdeploy_url if args.mode == "remote" else f"{args.mode}:{args.model}",
             "codec": args.codec_repo,
             "voices": [v[0] for v in voices],
         })
@@ -169,17 +217,30 @@ def main():
         chunks_sent = 0
         first_sent_at = None
         import aiohttp, asyncio
+
+        # infer_async chỉ có trong remote mode (HTTP qua lmdeploy). Standard/turbo
+        # mode chỉ có sync infer() → wrap qua asyncio.to_thread cho concurrency.
+        use_async_http = (args.mode == "remote") and hasattr(tts, "infer_async")
         try:
             async with aiohttp.ClientSession() as session:
-                # Fire tất cả sentences SONG SONG → lmdeploy batch nhiều requests
-                # cùng lúc (1.7x throughput). await theo thứ tự để stream đúng order.
+                # Fire tất cả sentences SONG SONG.
+                # Remote: dùng infer_async qua HTTP session → lmdeploy batch
+                #         multiple requests (1.7x throughput).
+                # Standard/turbo: dùng asyncio.to_thread(tts.infer) — GGUF
+                #         backbone serial nên parallel không lợi, nhưng giữ API
+                #         uniform để client code không phân biệt mode.
                 pending = []
                 for sentence in sentences:
                     sent_kwargs = dict(infer_kwargs)
                     sent_kwargs["text"] = sentence
-                    pending.append(asyncio.create_task(
-                        tts.infer_async(session=session, **sent_kwargs)
-                    ))
+                    if use_async_http:
+                        pending.append(asyncio.create_task(
+                            tts.infer_async(session=session, **sent_kwargs)
+                        ))
+                    else:
+                        pending.append(asyncio.create_task(
+                            asyncio.to_thread(tts.infer, **sent_kwargs)
+                        ))
                 for sent_idx, fut in enumerate(pending):
                     audio = await fut
                     arr = np.asarray(audio, dtype=np.float32).reshape(-1)

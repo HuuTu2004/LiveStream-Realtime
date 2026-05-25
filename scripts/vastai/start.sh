@@ -125,43 +125,52 @@ venv_cuda_libs() {
 
 # ───────────────────────────────────────────────────────────────────
 #  STEP 1 — lmdeploy api_server (venv_lmdeploy)
+#  CHỈ CHẠY khi VIENEU_MODE=remote (default). Nếu mode=standard/turbo,
+#  vieneu_server tự load GGUF backbone trong process → skip lmdeploy.
 # ───────────────────────────────────────────────────────────────────
-if [[ ! -f "${VENV_LMDEPLOY_DIR}/bin/python" ]]; then
-  echo "[ERROR] venv_lmdeploy chưa có. Chạy: bash scripts/vastai/setup.sh"
-  exit 1
-fi
-echo "[start] === Step 1/3: lmdeploy api_server (venv_lmdeploy) ==="
-echo "[start] model=${VIENEU_MODEL}  port=${LMDEPLOY_PORT}  tp=${LMDEPLOY_TP}"
+VIENEU_MODE="${VIENEU_MODE:-remote}"
 
-LMD_CUDA_LIBS="$(venv_cuda_libs "${VENV_LMDEPLOY_DIR}")"
-LD_LIBRARY_PATH="${LMD_CUDA_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-nohup "${VENV_LMDEPLOY_DIR}/bin/python" -u -m lmdeploy \
-  serve api_server "${VIENEU_MODEL}" \
-  --server-name 127.0.0.1 \
-  --server-port "${LMDEPLOY_PORT}" \
-  --tp "${LMDEPLOY_TP}" \
-  --chat-template "${LMDEPLOY_CHAT_TEMPLATE:-scripts/vastai/vieneu_chat_template.json}" \
-  --cache-max-entry-count "${LMDEPLOY_CACHE}" \
-  > logs/lmdeploy.log 2>&1 &
-LMDEPLOY_PID=$!
-echo "[start] lmdeploy pid=${LMDEPLOY_PID} → logs/lmdeploy.log"
-
-echo "[start] waiting lmdeploy /v1/models (max 300s, model load ~30-90s lần đầu)..."
-for i in $(seq 1 150); do
-  if curl -sf "http://127.0.0.1:${LMDEPLOY_PORT}/v1/models" >/dev/null 2>&1; then
-    echo "[start] lmdeploy READY @ :${LMDEPLOY_PORT}"
-    break
-  fi
-  if ! kill -0 "${LMDEPLOY_PID}" 2>/dev/null; then
-    echo "[ERROR] lmdeploy died early. Last 50 lines logs/lmdeploy.log:"
-    tail -n 50 logs/lmdeploy.log || true
+if [[ "${VIENEU_MODE}" == "remote" ]]; then
+  if [[ ! -f "${VENV_LMDEPLOY_DIR}/bin/python" ]]; then
+    echo "[ERROR] venv_lmdeploy chưa có. Chạy: bash scripts/vastai/setup.sh"
     exit 1
   fi
-  sleep 2
-done
-if ! curl -sf "http://127.0.0.1:${LMDEPLOY_PORT}/v1/models" >/dev/null 2>&1; then
-  echo "[ERROR] lmdeploy timeout sau 300s. Check logs/lmdeploy.log"
-  exit 1
+  echo "[start] === Step 1/3: lmdeploy api_server (venv_lmdeploy) ==="
+  echo "[start] model=${VIENEU_MODEL}  port=${LMDEPLOY_PORT}  tp=${LMDEPLOY_TP}"
+
+  LMD_CUDA_LIBS="$(venv_cuda_libs "${VENV_LMDEPLOY_DIR}")"
+  LD_LIBRARY_PATH="${LMD_CUDA_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  nohup "${VENV_LMDEPLOY_DIR}/bin/python" -u -m lmdeploy \
+    serve api_server "${VIENEU_MODEL}" \
+    --server-name 127.0.0.1 \
+    --server-port "${LMDEPLOY_PORT}" \
+    --tp "${LMDEPLOY_TP}" \
+    --chat-template "${LMDEPLOY_CHAT_TEMPLATE:-scripts/vastai/vieneu_chat_template.json}" \
+    --cache-max-entry-count "${LMDEPLOY_CACHE}" \
+    > logs/lmdeploy.log 2>&1 &
+  LMDEPLOY_PID=$!
+  echo "[start] lmdeploy pid=${LMDEPLOY_PID} → logs/lmdeploy.log"
+
+  echo "[start] waiting lmdeploy /v1/models (max 300s, model load ~30-90s lần đầu)..."
+  for i in $(seq 1 150); do
+    if curl -sf "http://127.0.0.1:${LMDEPLOY_PORT}/v1/models" >/dev/null 2>&1; then
+      echo "[start] lmdeploy READY @ :${LMDEPLOY_PORT}"
+      break
+    fi
+    if ! kill -0 "${LMDEPLOY_PID}" 2>/dev/null; then
+      echo "[ERROR] lmdeploy died early. Last 50 lines logs/lmdeploy.log:"
+      tail -n 50 logs/lmdeploy.log || true
+      exit 1
+    fi
+    sleep 2
+  done
+  if ! curl -sf "http://127.0.0.1:${LMDEPLOY_PORT}/v1/models" >/dev/null 2>&1; then
+    echo "[ERROR] lmdeploy timeout sau 300s. Check logs/lmdeploy.log"
+    exit 1
+  fi
+else
+  echo "[start] === Step 1/3: SKIP lmdeploy (VIENEU_MODE=${VIENEU_MODE}) ==="
+  echo "[start]   vieneu_server sẽ tự load backbone in-process (GGUF GPU)."
 fi
 
 # ───────────────────────────────────────────────────────────────────
@@ -172,11 +181,12 @@ if [[ ! -f "${VENV_VIENEU_DIR}/bin/python" ]]; then
   exit 1
 fi
 echo "[start] === Step 2/3: vieneu_server.py (venv_vieneu) ==="
-echo "[start] http_port=${VIENEU_HTTP_PORT}  backbone=http://127.0.0.1:${LMDEPLOY_PORT}/v1"
+echo "[start] mode=${VIENEU_MODE} http_port=${VIENEU_HTTP_PORT}"
 
 VIENEU_CUDA_LIBS="$(venv_cuda_libs "${VENV_VIENEU_DIR}")"
 LD_LIBRARY_PATH="${VIENEU_CUDA_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 nohup "${VENV_VIENEU_DIR}/bin/python" -u scripts/vastai/vieneu_server.py \
+  --mode "${VIENEU_MODE}" \
   --port "${VIENEU_HTTP_PORT}" \
   --host 127.0.0.1 \
   --model "${VIENEU_MODEL}" \
