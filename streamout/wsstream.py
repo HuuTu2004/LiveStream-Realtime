@@ -145,13 +145,6 @@ class WSStreamOutput(BaseOutput):
             '-s', f'{w}x{h}', '-r', str(self.fps),
             '-thread_queue_size', '512',
             '-i', 'pipe:0',
-            # PERF FIX: scale resolution TRƯỚC encode.
-            # mpeg1video là single-threaded encoder. 1080×1920 @ 25fps =
-            # 99% 1 CPU core → encode chậm hơn realtime → stdin pipe block
-            # → render thread block → frame jitter VISIBLE cho viewer.
-            # Scale xuống env-overridable (default 576×768 ≈ 0.27x pixel,
-            # encode ~6x nhanh, vẫn rõ mặt avatar cho livestream).
-            '-vf', os.environ.get('WSSTREAM_VFILTER', 'scale=576:768'),
             # Encode: MPEG-1 video + MP2 audio (JSMpeg-compatible)
             '-c:v', 'mpeg1video',
             '-b:v', str(self.video_bitrate),
