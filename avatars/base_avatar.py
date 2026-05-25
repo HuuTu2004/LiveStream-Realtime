@@ -654,10 +654,16 @@ class BaseAvatar:
             t = time.perf_counter()
             self.asr.run_step()
 
+            # Backpressure cho render thread khi audio queue cao. WSStream đã pace
+            # output 25fps trong push_video_frame, nên upstream chỉ cần wait 1 frame
+            # interval (40ms). Trước đây `sleep(0.04 * buffer_size * 0.8)` linearly
+            # → khi silent + UNet skipped (commit 0252ae2), render iter rất nhanh
+            # → audio queue fills nhanh → buffer >> 5 → sleep TỚI 1.6s → avatar FREEZE.
+            # Cap sleep tại 1 frame (40ms): vẫn backpressure nhưng KHÔNG freeze visible.
             buffer_size = self.output.get_buffer_size() if hasattr(self.output, 'get_buffer_size') else 0
             if buffer_size >= 5:
-                logger.debug('sleep qsize=%d', buffer_size)
-                time.sleep(0.04 * buffer_size * 0.8)
+                logger.debug('backpressure sleep qsize=%d', buffer_size)
+                time.sleep(0.04)  # 1 frame interval — let WSStream output drain
         logger.info('baseavatar render thread stop')
 
         infer_quit_event.set()
