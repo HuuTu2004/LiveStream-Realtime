@@ -37,6 +37,17 @@ VENV_DIR="${REPO_ROOT}/venv_talking"
 VENV_LMDEPLOY_DIR="${REPO_ROOT}/venv_lmdeploy"
 VENV_VIENEU_DIR="${REPO_ROOT}/venv_vieneu"
 
+# Auto-source .env nếu tồn tại — chứa secrets (OPENAI_API_KEY, BRAIN_ENABLED,
+# HF_TOKEN, ...) không commit vào git. Tránh ghi secrets vào `ps aux` arg
+# hoặc shell history. File phải chmod 600.
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  echo "[start] Sourcing .env (secrets)"
+  set -a  # auto-export tất cả vars
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/.env"
+  set +a
+fi
+
 # Activate venv_talking (cho exec app.py cuối cùng).
 if [[ -z "${VIRTUAL_ENV:-}" ]] && [[ -f "${VENV_DIR}/bin/activate" ]]; then
   # shellcheck disable=SC1090
