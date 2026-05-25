@@ -468,24 +468,34 @@ class BaseAvatar:
              # 检测状态变化
             current_speaking = not is_all_silence
 
-            # Always run UNet (kể cả silent) — silent audio features sẽ predict miệng ngậm,
-            # tránh hiện tượng frame gốc (đang nói) lộ miệng khi không có TTS.
-            # Trade-off: GPU UNet luôn chạy ~3GB VRAM thay vì idle khi silent.
-            if current_speaking and not last_speaking and self.custom_index.get(1) is not None: #从静音到说话切换,并且有自定义静态视频
-                index = 0
-            t = time.perf_counter()
+            # PERF FIX: skip UNet inference khi silent → giải phóng GPU compute
+            # cho lmdeploy TTS gen (giảm contention, musetalk speaking fps +30%).
+            # Render thread upstream sẽ blend frame gốc với mask đóng miệng từ
+            # pre-computed cache (xem render_to_image) — visual consistency vẫn ok.
+            # (Trước đó commit 6807d8f always-run UNet ngay cả silent → 3GB VRAM +
+            # 100% SM thường trực → bottleneck TTS contention.)
+            if is_all_silence:
+                # Silent: put None frames → render thread dùng frame gốc / cached
+                for i in range(self.batch_size):
+                    idx = mirror_index(length, index)
+                    self.res_frame_queue.put((None, audio_frames[i*2:i*2+2], idx))
+                    index = index + 1
+            else:
+                if current_speaking and not last_speaking and self.custom_index.get(1) is not None: #从静音到说话切换,并且有自定义静态视频
+                    index = 0
+                t = time.perf_counter()
 
-            pred = self.inference_batch(index, audiofeat_batch)
+                pred = self.inference_batch(index, audiofeat_batch)
 
-            counttime += (time.perf_counter() - t)
-            count += self.batch_size
-            if count >= 100:
-                logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
-                count = 0
-                counttime = 0
-            for i, res_frame in enumerate(pred):
-                self.res_frame_queue.put((res_frame, audio_frames[i*2:i*2+2], mirror_index(length, index)))
-                index = index + 1
+                counttime += (time.perf_counter() - t)
+                count += self.batch_size
+                if count >= 100:
+                    logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
+                    count = 0
+                    counttime = 0
+                for i, res_frame in enumerate(pred):
+                    self.res_frame_queue.put((res_frame, audio_frames[i*2:i*2+2], mirror_index(length, index)))
+                    index = index + 1
                     
             if current_speaking != last_speaking:
                 logger.info(f"inference state changed: {'speaking' if last_speaking else 'silent'} -> {'speaking' if current_speaking else 'silent'}")
