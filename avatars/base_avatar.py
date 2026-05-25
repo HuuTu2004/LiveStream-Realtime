@@ -191,11 +191,31 @@ class BaseAvatar:
         return stream
 
     def flush_talk(self):
+        # Order quan trọng:
+        # 1. TTS state=PAUSE trước → _txt_to_audio_impl đang chạy sẽ break loop
+        #    ở lần check kế (tránh push thêm audio chunks vào pipeline)
+        # 2. Clear msgqueue → text chưa convert audio bị bỏ
+        # 3. Clear ASR queues (queue + frames + feat_queue + output_queue) →
+        #    audio đã push không tiến qua render
+        # 4. Clear res_frame_queue → frames đã render sẵn không phát ra
+        # Bỏ qua bước nào → user nghe "2 giọng" overlap (câu cũ tail + câu mới start)
         if hasattr(self, 'tts') and hasattr(self.tts, 'flush_talk'):
             self.tts.flush_talk()
         if hasattr(self, 'asr') and hasattr(self.asr, 'flush_talk'):
             self.asr.flush_talk()
-        self.custom_audiotype = 0  
+        # Drain res_frame_queue — frames đã produced từ inference thread
+        # nhưng chưa render_to_image consume.
+        if hasattr(self, 'res_frame_queue'):
+            try:
+                import queue as _q
+                while True:
+                    try:
+                        self.res_frame_queue.get_nowait()
+                    except _q.Empty:
+                        break
+            except Exception:
+                pass
+        self.custom_audiotype = 0
 
     # def flush(self):
     #     self.flush_talk()

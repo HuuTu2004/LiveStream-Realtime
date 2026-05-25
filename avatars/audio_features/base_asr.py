@@ -48,7 +48,29 @@ class BaseASR:
         #self.warm_up()
 
     def flush_talk(self):
-        self.queue.queue.clear()
+        # Clear MỌI buffered audio pipeline — fix audio overlap khi brain
+        # priority interrupt. Trước chỉ clear self.queue (input audio frames),
+        # nhưng audio đã move qua self.frames (ASR window) + self.feat_queue
+        # (whisper features) + self.output_queue (per-frame for render) vẫn
+        # phát ra → user nghe câu cũ tail + câu mới start = "2 giọng".
+        try:
+            self.queue.queue.clear()
+        except Exception:
+            pass
+        try:
+            self.frames.clear()
+        except Exception:
+            pass
+        try:
+            while not self.feat_queue.empty():
+                self.feat_queue.get_nowait()
+        except Exception:
+            pass
+        try:
+            while not self.output_queue.empty():
+                self.output_queue.get_nowait()
+        except Exception:
+            pass
 
     def put_audio_frame(self,audio_chunk:NDArray[np.float32],datainfo:dict): #16khz 20ms pcm
         self.queue.put(AudioFrameData(data=audio_chunk,type=0,userdata=datainfo))
