@@ -125,10 +125,11 @@ venv_cuda_libs() {
 
 # ───────────────────────────────────────────────────────────────────
 #  STEP 1 — lmdeploy api_server (venv_lmdeploy)
-#  CHỈ CHẠY khi VIENEU_MODE=remote (default). Nếu mode=standard/turbo,
-#  vieneu_server tự load GGUF backbone trong process → skip lmdeploy.
+#  CHỈ CHẠY khi VIENEU_MODE=remote. Mode khác (fast/standard/turbo/turbo_gpu)
+#  load backbone IN-PROCESS trong vieneu_server → skip lmdeploy hoàn toàn.
+#  Default = fast (per VieNeu docs khuyến nghị).
 # ───────────────────────────────────────────────────────────────────
-VIENEU_MODE="${VIENEU_MODE:-remote}"
+VIENEU_MODE="${VIENEU_MODE:-fast}"
 
 if [[ "${VIENEU_MODE}" == "remote" ]]; then
   if [[ ! -f "${VENV_LMDEPLOY_DIR}/bin/python" ]]; then

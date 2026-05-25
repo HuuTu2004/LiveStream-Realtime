@@ -1,43 +1,33 @@
 # ──────────────────────────────────────────────────────────────────────
-#  venv_vieneu — Vieneu remote client (codec ONNX decoder).
-#  Isolated từ venv_lmdeploy (LM backbone) và venv_talking (wav2lip).
+#  venv_vieneu — FAST mode (per VieNeu official docs)
+#  https://docs.vieneu.io/vi/docs/getting-started/installation
+#  https://docs.vieneu.io/vi/docs/sdk/fast-mode
 #
-#  Job: scripts/vastai/vieneu_server.py listen :23334
-#       1. Nhận POST /infer_stream với text
-#       2. Split sentences regex
-#       3. tts.infer() batch mỗi câu (mode='remote' → POST lmdeploy :23333
-#          để gen audio_tokens; ONNX codec decode tokens → PCM)
-#       4. Stream HTTP response chunks 200ms PCM 24kHz
+#  Một lệnh `pip install vieneu[gpu]` kéo theo:
+#    - torch (compatible version do vieneu pin)
+#    - lmdeploy turbomind (cho in-process backbone inference)
+#    - neucodec (codec lib + ONNX runtime)
+#    - transformers, tokenizers, aiohttp, requests
 #
-#  Torch CUDA wheel KHÔNG nằm ở đây — setup.sh tự install từ pytorch index
-#  (cu124 cho Ada/Ampere/Hopper, cu128 cho Blackwell) trước.
+#  FAST mode = vieneu_server tự load Qwen3 backbone in-process bằng LMDeploy
+#  turbomind. KHÔNG cần lmdeploy api_server riêng → ít VRAM contention, ít
+#  HTTP roundtrip, latency thấp hơn ~30%.
 #
-#  Vieneu[gpu] kéo theo:
-#    - transformers (cho tokenizer)
-#    - neucodec (codec lib, hỗ trợ cả PyTorch + ONNX runtime)
-#    - llama-cpp-python (chỉ dùng cho standard mode — không dùng ở production)
-#    - aiohttp, requests
-#  Production dùng ONNX decoder (neuphonic/neucodec-onnx-decoder-int8) →
-#  KHÔNG cần PyTorch full neucodec. Tốc độ ~5x realtime + sạch hơn.
+#  Server-side (vieneu_server.py):
+#    1. POST /infer_stream với text
+#    2. Split sentences regex
+#    3. tts.infer() batch mỗi câu (mode='fast' → in-process turbomind gen
+#       audio_tokens; ONNX codec decode tokens → PCM)
+#    4. Stream HTTP response chunks 200ms PCM 24kHz
 # ──────────────────────────────────────────────────────────────────────
 
 vieneu[gpu]
 aiohttp>=3.9
 numpy>=2.0
 soundfile>=0.12
-# onnxruntime-gpu = CUDA codec decode → audio gen 1.78x realtime (vs CPU 1.0x).
+
+# CUDA codec decoder → audio gen ~1.78x realtime (vs CPU 1.0x).
 # Đánh đổi: thêm GPU compute (codec dùng SM) → musetalk fps drop nhẹ trên
-# 3090 đã sát limit. Nhưng audio responsive hơn → livestream UX tốt hơn cho
-# user đeo headphone. Default GPU; chỉ revert CPU nếu GPU VRAM cực thiếu.
+# 3090 đã sát limit. Nhưng audio responsive hơn → livestream UX tốt hơn.
+# Default GPU; revert CPU (onnxruntime) chỉ nếu GPU VRAM cực thiếu.
 onnxruntime-gpu>=1.20
-
-# ── transformers compat ────────────────────────────────────────────────
-# transformers 5.x require torch>=2.11 (cpp extensions). Pin <5.0 cho
-# torch 2.4-2.6 stable.
-transformers>=4.45,<5.0
-# torchao 0.14+ require torch._pytree.register_constant (torch>=2.7).
-# torchtune (vieneu indirect dep) cần torchao. 0.9-0.13 hợp với torch 2.4-2.6.
-torchao>=0.9,<0.14
-
-# KHÔNG cài lmdeploy ở đây — chạy ở venv_lmdeploy riêng.
-# Vieneu_server kết nối lmdeploy qua HTTP api_base.

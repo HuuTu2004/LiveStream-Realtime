@@ -1,31 +1,29 @@
 ###############################################################################
-#  vieneu HTTP server — chạy trong venv_vieneu (production 3-venv setup)
+#  vieneu HTTP server — chạy trong venv_vieneu (production 2-venv FAST mode)
 #
-#  Architecture (Vast.AI single instance, 3 process, 3 venv):
+#  Architecture mặc định = FAST mode (per VieNeu docs khuyến nghị):
+#    https://docs.vieneu.io/vi/docs/sdk/fast-mode
 #
 #    ┌──────────────────────────────────────────────────────────┐
-#    │ venv_lmdeploy   (torch 2.4 + lmdeploy 0.6.5)              │
-#    │   :23333 /v1/chat/completions                              │
-#    │   VieNeu-TTS-v2 LM backbone (bfloat16 full, TurboMind GPU)│
-#    └──────────────────────────────────────────────────────────┘
-#                       ↓ HTTP (OpenAI-compatible chat completions)
-#    ┌──────────────────────────────────────────────────────────┐
-#    │ venv_vieneu     (torch 2.6 + vieneu remote + neucodec)    │
+#    │ venv_vieneu     (vieneu[gpu] = torch + lmdeploy + ONNX)   │
 #    │   vieneu_server.py (THIS FILE)                            │
 #    │   :23334 /infer_stream  (length-prefixed f32le PCM 24kHz) │
-#    │   - vieneu mode='remote' → POST :23333 cho LM token gen   │
-#    │   - neucodec PyTorch full → decode tokens → waveform      │
+#    │   - mode=fast: LMDeploy turbomind IN-PROCESS load Qwen3   │
+#    │     backbone bf16 → audio_tokens (no HTTP roundtrip)      │
+#    │   - ONNX int8 codec decode tokens → PCM 24kHz             │
 #    └──────────────────────────────────────────────────────────┘
 #                       ↓ HTTP PCM stream
 #    ┌──────────────────────────────────────────────────────────┐
-#    │ venv_talking    (torch 2.4 + wav2lip + requests)          │
+#    │ venv_talking    (torch 2.4 + wav2lip/musetalk)            │
 #    │   app.py + tts/vieneu_http.py                             │
 #    │   :8010 / (web + wsstream)                                │
 #    └──────────────────────────────────────────────────────────┘
 #
-#  Lợi: max quality cả backbone (bfloat16) lẫn codec (PyTorch full).
-#        Zero pip/ABI conflict — mỗi venv giữ torch version riêng.
-#  TTFB: ~0.26s (so với ~1s standard mode GGUF Q4).
+#  Mode khác (legacy, opt-in):
+#    - remote: lmdeploy api_server riêng ở :23333 (3-venv setup)
+#    - standard/turbo/turbo_gpu: GGUF/transformers backbone in-process
+#
+#  Fast mode TTFB ~0.6s (post-warmup), single-GPU mượt nhất.
 ###############################################################################
 
 import argparse
@@ -40,12 +38,13 @@ from aiohttp import web
 
 def parse_args():
     p = argparse.ArgumentParser(description="Vieneu TTS HTTP server")
-    p.add_argument("--mode", default=os.environ.get("VIENEU_MODE", "remote"),
-                   choices=["remote", "standard", "turbo", "turbo_gpu"],
-                   help="remote=lmdeploy bf16 (heavy, max quality), "
+    p.add_argument("--mode", default=os.environ.get("VIENEU_MODE", "fast"),
+                   choices=["fast", "remote", "standard", "turbo", "turbo_gpu"],
+                   help="fast=LMDeploy in-process (RECOMMENDED, no HTTP layer, bf16 max quality), "
+                        "remote=lmdeploy external server (legacy 3-process setup), "
                         "standard=GGUF Q4 GPU (llama-cpp, light), "
                         "turbo=Turbo 0.1B GGUF CPU (Edge), "
-                        "turbo_gpu=Turbo 0.1B BF16 transformers GPU ⭐ FASTEST realtime")
+                        "turbo_gpu=Turbo 0.1B BF16 transformers GPU")
     p.add_argument("--emotion", default=os.environ.get("VIENEU_EMOTION", "natural"),
                    choices=["natural", "storytelling"])
     p.add_argument("--port", type=int, default=int(os.environ.get("VIENEU_HTTP_PORT", "23334")),
@@ -73,7 +72,21 @@ def main():
     from vieneu import Vieneu
 
     # ─── Mode dispatch ────────────────────────────────────────────────────
-    if args.mode == "remote":
+    if args.mode == "fast":
+        # ⭐ RECOMMENDED per VieNeu docs (docs.vieneu.io/vi/docs/sdk/fast-mode):
+        # LMDeploy turbomind IN-PROCESS (không cần external server) → no HTTP
+        # roundtrip → lowest latency. bf16 max quality + GPU optimized.
+        # Đòi hỏi GPU NVIDIA ≥4GB VRAM + CUDA 12.8+.
+        #
+        # FastVieNeuTTS.__init__ KHÔNG nhận `emotion` (chỉ remote mode có).
+        # Emotion phải pass vào tts.infer() qua kwargs nếu model support, hoặc
+        # control bằng ref_audio/ref_text style. Bỏ emotion ở init time.
+        log(f"Loading Vieneu mode=fast (in-process LMDeploy turbomind) model={args.model}")
+        kwargs = {"mode": "fast", "backbone_repo": args.model}
+        if args.codec_repo:
+            kwargs["codec_repo"] = args.codec_repo
+        tts = Vieneu(**kwargs)
+    elif args.mode == "remote":
         # lmdeploy bf16 backbone — max quality, NHƯNG share GPU compute với
         # musetalk → contention. Dùng khi GPU có headroom hoặc multi-GPU.
         log(f"Loading Vieneu mode=remote backbone={args.lmdeploy_url} model={args.model} codec={args.codec_repo}")

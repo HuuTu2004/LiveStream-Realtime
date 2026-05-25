@@ -91,8 +91,6 @@ Vast.AI đã chạy trên Docker container, không cần build Dockerfile riêng
    bash scripts/vastai/start.sh    # production
    ```
 
-Hoặc paste [scripts/vastai/onstart.sh](scripts/vastai/onstart.sh) vào field "On-start Script" của Vast.AI.
-
 ## 🛠️ Kiến trúc
 
 Xem chi tiết: **[ARCHITECTURE.md](ARCHITECTURE.md)**.

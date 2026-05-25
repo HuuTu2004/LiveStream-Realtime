@@ -81,7 +81,7 @@ Script chạy tuần tự 3 bước:
 
 | Bước | Script | Thời gian | Output |
 |---|---|---|---|
-| 1 | `setup.sh` | ~10-15 phút | 3 venvs (talking/lmdeploy/vieneu) + torch + pip deps |
+| 1 | `setup.sh` | ~10-15 phút | 2 venvs (talking/vieneu, fast mode) + torch + pip deps |
 | 2 | `download_models.sh` | ~5-10 phút | musetalkV15 + sd-vae + whisper + dwpose + VieNeu-TTS cache |
 | 3 | `setup_musetalk_avatar.sh` | ~5-7 phút | venv_avatar (py3.10 + mmcv) + genavatar.py preprocess |
 
@@ -90,7 +90,7 @@ Script chạy tuần tự 3 bước:
 ### Chạy từng bước thủ công (nếu cần debug)
 
 ```bash
-bash scripts/vastai/setup.sh                                     # 3 venvs
+bash scripts/vastai/setup.sh                                     # 2 venvs (fast)
 bash scripts/vastai/download_models.sh                            # models
 bash scripts/vastai/setup_musetalk_avatar.sh data/uploads/mau.mp4 mau  # avatar
 ```
@@ -152,17 +152,18 @@ Tab "💬 Chat thẳng với avatar" → gõ text → bấm "▶ Avatar nói" �
 | File | Mục đích |
 |---|---|
 | [bootstrap.sh](bootstrap.sh) | **Entry point one-command** — chạy setup + download + avatar |
-| [setup.sh](setup.sh) | Step 1 — install 3 venvs (talking/lmdeploy/vieneu) |
+| [bootstrap.sh](bootstrap.sh) | One-shot: setup → download_models → setup_musetalk_avatar |
+| [setup.sh](setup.sh) | Step 1 — install 2 venvs (talking/vieneu, fast mode default) |
 | [download_models.sh](download_models.sh) | Step 2 — pull model weights từ HF |
 | [setup_musetalk_avatar.sh](setup_musetalk_avatar.sh) | Step 3 — preprocess video → musetalk avatar |
-| [start.sh](start.sh) | Production launcher — env-driven, spawn 3 process |
+| [start.sh](start.sh) | Production launcher — env-driven, fast mode default |
 | [vieneu_server.py](vieneu_server.py) | venv_vieneu HTTP server (text → PCM stream) |
-| [vieneu_chat_template.json](vieneu_chat_template.json) | lmdeploy custom passthrough chat template |
-| `requirements_*.txt` | Pip pin per venv |
+| [vieneu_chat_template.json](vieneu_chat_template.json) | (Optional) lmdeploy chat template — chỉ remote mode |
+| `requirements_vast.txt` | venv_talking pip pin |
+| `requirements_vieneu.txt` | venv_vieneu pip pin (vieneu[gpu] all-in-one) |
+| `requirements_lmdeploy.txt` | (Optional) venv_lmdeploy pin — chỉ `SETUP_LMDEPLOY=true` |
 | [deploy_from_windows.ps1](deploy_from_windows.ps1) | Windows-side push code+assets |
 | [encode_voice.py](encode_voice.py) | (Optional) voice clone — gen voice.pkl từ ref.wav |
-| [onstart.sh](onstart.sh) | (Optional) paste vào "On-start Script" của Vast UI |
-| [install_systemd.sh](install_systemd.sh) + [livetalking.service](livetalking.service) | (Optional) systemd unit cho non-Vast deploy |
 
 ---
 
@@ -171,6 +172,15 @@ Tab "💬 Chat thẳng với avatar" → gõ text → bấm "▶ Avatar nói" �
 ### `Setup.sh` chậm vì pip mirror
 
 **Đã fix**: setup.sh dùng `pypi.org` (Fastly CDN, ~50-100 Mbps từ VN/US). Trước đây aliyun mirror throttle ~1 MB/s.
+
+### `pip install vieneu[gpu]` resolver loop (15+ phút chưa xong)
+
+**Đã fix**: setup.sh tự bootstrap [uv](https://github.com/astral-sh/uv) (Astral, pip-compatible Rust installer) + dùng `uv pip install` cho venv_vieneu. Vieneu[gpu] có 178 deps, pip resolver phải re-download sdist mỗi lần explore version → loop hàng giờ. uv parallel resolver hoàn tất trong ~40s, full install ~2-3 phút (vs pip 30-60+ phút).
+
+| Tool | Resolver | Install vieneu[gpu] |
+|---|---|---|
+| pip --no-cache-dir | sequential | 30-60+ phút |
+| **uv pip** | parallel + cache | **~2-3 phút** |
 
 ### `mmcv build wheel failed` khi setup_musetalk_avatar
 

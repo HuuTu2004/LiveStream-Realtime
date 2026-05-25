@@ -6,8 +6,9 @@
 #    bash scripts/vastai/bootstrap.sh
 #
 #  Tuần tự:
-#    1. setup.sh                  — 3 venvs (talking/lmdeploy/vieneu), torch,
-#                                    pip deps. ~10-15 phút.
+#    1. setup.sh                  — 2 venvs (talking/vieneu, fast mode default),
+#                                    torch, pip deps. ~10-15 phút.
+#                                    (3 venvs nếu SETUP_LMDEPLOY=true cho remote mode)
 #    2. download_models.sh        — musetalkV15 + sd-vae + whisper + dwpose +
 #                                    VieNeu-TTS pre-cache + wav2lip.pth.
 #                                    ~5-10 phút.
@@ -38,7 +39,7 @@ echo "   AVATAR_ID=$AVATAR_ID"
 echo "═════════════════════════════════════════════════════════════════"
 
 echo
-echo "▶ [1/3] setup.sh — 3 venvs (talking/lmdeploy/vieneu)..."
+echo "▶ [1/3] setup.sh — 2 venvs (talking/vieneu, fast mode default)..."
 bash scripts/vastai/setup.sh
 
 echo
